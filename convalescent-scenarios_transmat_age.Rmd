@@ -109,14 +109,14 @@ Initial conditions and assumptions are as follows:
 -$\sigma$ = 1 / (5.2 days)  
 -natural death rate = 0   
 -birth rate = 0  
--mortality rate from infection = 0.1 / (3*7), where 3 weeks = median number of days from symptoms to death; case fatality rate is 10%
+-mortality rate from infection = probability of death among hospitalized / (3*7), where 3 weeks = median number of days from symptoms to death
 
   
 For plasma, we assume
 -proportion of plasma that's functional (with high enough titer) is 70%  
 -Among those susceptibles that receive functional plasma, transmission coefficient is reduced by 50%  
 -$\gamma_t$ = 1 / 4 (duration of time to recovery is reduced from 6.5 days to 4 days)    
--mortality rate from infection for treated individuals is  = 0.05 / (3*7) (half of mortality for untreated people)    
+-mortality rate from infection for treated individuals is  = (half of mortality  for untreated people)    
 -proportion of exposed individuals treated with effective plasma that move on to infected compartment is $prop_{ETI}$ = 0.1  
   
 
@@ -185,9 +185,14 @@ setup_seir_age = function(c_scale_vec=1, prop_sym, p_hosp, hcw.mix="45,55", hml.
   p_mild = prop_sym * (1-p_hosp) # proportion mild
   
   
+  #ICU_2<-c(0,29.61,44.62,124.94,106.86,44.62,44.62)
+dead_ICU_2<- c(0, 0.58,1.465,11.095,16.435,1.465,1.465)
+  p_death = dead_ICU_2 / hosp_2
+  
   
   return(list(W = W, C = C, ICs = InCs, Ncomp = Ncomp,
-              p_asym = p_asym, p_severe = p_severe, p_mild = p_mild))
+              p_asym = p_asym, p_severe = p_severe, p_mild = p_mild,
+              p_death = p_death))
 }
 
 
@@ -574,8 +579,8 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     births[1] = mu
     deaths = rep(v, Ncomp)
     ######### GOING TO NEED TO UPDATE DEATHS FROM COVID ---- age and severity (ICU / non-ICU)
-    deaths_I = rep(v_I, Ncomp)
-    deaths_It = rep(v_It, Ncomp)
+    deaths_I = v_I
+    deaths_It = v_It
     
     dw = rtruncnorm(Ncomp, a =0, mean = 1, sd = sd.dw)
     
@@ -591,6 +596,16 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     foi_prob_St <- 1 - exp( - ef_est * beta* WI / N * dw * delta.t)
     #exposed_prob_t <- 1 - exp( - sigma * delta.t * ef_est)   
     
+    # replace any negative values with zeros
+    foi_prob = replace(foi_prob, foi_prob<0, 0)
+    exposed_prob = replace(exposed_prob, exposed_prob<0, 0)
+    inf_prob = replace(inf_prob, inf_prob<0, 0)
+    death_prob = replace(death_prob, death_prob<0, 0)
+    death_prob_I = replace(death_prob_I, death_prob_I<0, 0)
+    inf_prob_t = replace(inf_prob_t, inf_prob_t<0, 0)
+    inf_prob_et = replace(inf_prob_et, inf_prob_et<0, 0)
+    death_prob_It = replace(death_prob_It, death_prob_It<0, 0)
+    foi_prob_St = replace(foi_prob_St, foi_prob_St<0, 0)
     
     # plasma allocation ---- CONSIDER HOW TO DO THIS NICELY. 
     # # 1. split between compartments based on multinomial draw
@@ -619,31 +634,31 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     for(i in (1:Ncomp)){
       new_St[i] = ifelse(P[it] * p_use * p_s[i] + SIA_s[it, i]>S[it,i],  S[it, i] * prop_ef, P[it] * p_use * p_s[i] * prop_ef + SIA_s[it, i] * prop_ef)
     }
-    p_St = ifelse(new_St == 0, 0, new_St / S[it, ])
+    p_St = ifelse((new_St < 0 | S[it,]==0), 0, new_St / S[it, ])
     
     new_Et = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
       new_Et[i] = ifelse(P[it] * p_use * p_e[i] + SIA_e[it, i]>E[it,i],  E[it, i] * prop_ef, P[it] * p_use * p_e[i] * prop_ef + SIA_e[it, i] * prop_ef)
     }      
-    p_Et = ifelse(new_Et ==0, 0, new_Et / E[it, ])
+    p_Et = ifelse((new_Et <0 | E[it,]==0), 0, new_Et / E[it, ])
     
     new_Iat = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
       new_Iat[i] = ifelse(P[it] * p_use * p_ia[i] + SIA_ia[it, i]>A[it,i],  A[it, i] * prop_ef, P[it] * p_use * p_ia[i] * prop_ef + SIA_ia[it, i] * prop_ef)
     } 
-    p_Iat = ifelse(new_Iat ==0, 0, new_Iat / A[it, ])
+    p_Iat = ifelse((new_Iat <0 | A[it,]==0), 0, new_Iat / A[it, ])
     
     new_Imt = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
       new_Imt[i] = ifelse(P[it] * p_use * p_im[i] + SIA_im[it, i]>Im[it,i],  Im[it, i] * prop_ef, P[it] * p_use * p_im[i] * prop_ef + SIA_im[it, i] * prop_ef)
     }  
-    p_Imt = ifelse(new_Imt ==0, 0, new_Imt / Im[it, ])
+    p_Imt = ifelse((new_Imt <0 | Im[it,]==0), 0, new_Imt / Im[it, ])
     
     new_Ist = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
       new_Ist[i] = ifelse(P[it] * p_use * p_is[i] + SIA_is[it, i]>Is[it,i],  Is[it, i] * prop_ef, P[it] * p_use * p_is[i] * prop_ef + SIA_is[it, i] * prop_ef)
     }  
-    p_Ist = ifelse(new_Ist ==0, 0, new_Ist / Is[it, ])
+    p_Ist = ifelse((new_Ist <0 | Is[it,]==0), 0, new_Ist / Is[it, ])
     
     
     ## set up a transition matrix A
@@ -656,25 +671,25 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
       Tm_a = TM_list[[k]]
       
       # transitions out of S compartment
-      Tm_a[1,] = c(1-p_St[k]-t(foi_prob[k]), p_St[k], t(foi_prob[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      Tm_a[1,] = c(max(0,1-p_St[k]-t(foi_prob[k])), p_St[k], t(foi_prob[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
       # transitions out of St compartment
-      Tm_a[2,] = c(0, 1-t(foi_prob_St[k]), t(foi_prob_St[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      Tm_a[2,] = c(0, max(0,1-t(foi_prob_St[k])), t(foi_prob_St[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
       # transitions out of E compartment
-      Tm_a[3,] = c(0, 0, 1-p_Et[k]-exposed_prob[k], p_Et[k], exposed_prob[k]*p_asym[k], 0, exposed_prob[k]*p_mild[k], 0, exposed_prob[k]*p_severe[k], 0, 0, 0)
+      Tm_a[3,] = c(0, 0, max(0,1-p_Et[k]-exposed_prob[k]), p_Et[k], exposed_prob[k]*p_asym[k], 0, exposed_prob[k]*p_mild[k], 0, exposed_prob[k]*p_severe[k], 0, 0, 0)
       # transitions out of Et compartment
-      Tm_a[4,] = c(0, 0, 0, 1-inf_prob_et[k]-inf_prob_t[k], inf_prob_et[k]*p_asym[k], 0, inf_prob_et[k]*p_mild[k], 0, inf_prob_et[k]*p_severe[k], 0, inf_prob_t[k], 0)
+      Tm_a[4,] = c(0, 0, 0, max(0,1-inf_prob_et[k]-inf_prob_t[k]), inf_prob_et[k]*p_asym[k], 0, inf_prob_et[k]*p_mild[k], 0, inf_prob_et[k]*p_severe[k], 0, inf_prob_t[k], 0)
       # transitions out of Ia compartment
-      Tm_a[5,] = c(0, 0, 0, 0, 1-p_Iat[k]-inf_prob[k], p_Iat[k], 0, 0, 0, 0, inf_prob[k], 0)
+      Tm_a[5,] = c(0, 0, 0, 0, max(0,1-p_Iat[k]-inf_prob[k]), p_Iat[k], 0, 0, 0, 0, inf_prob[k], 0)
       # transitions out of Iat compartment
-      Tm_a[6,] = c(0, 0, 0, 0, 0, 1-inf_prob_t[k], 0, 0, 0, 0, inf_prob_t[k], 0)
+      Tm_a[6,] = c(0, 0, 0, 0, 0, max(0,1-inf_prob_t[k]), 0, 0, 0, 0, inf_prob_t[k], 0)
       # transitions out of Im compartment
-      Tm_a[7,] = c(0, 0, 0, 0, 0, 0, 1-p_Imt[k]-inf_prob[k], p_Imt[k], 0, 0, inf_prob[k], 0)
+      Tm_a[7,] = c(0, 0, 0, 0, 0, 0, max(0,1-p_Imt[k]-inf_prob[k]), p_Imt[k], 0, 0, inf_prob[k], 0)
       # transitions out of Imt compartment
-      Tm_a[8,] = c(0, 0, 0, 0, 0, 0, 0, 1-inf_prob_t[k], 0, 0, inf_prob_t[k], 0)
+      Tm_a[8,] = c(0, 0, 0, 0, 0, 0, 0, max(0,1-inf_prob_t[k]), 0, 0, inf_prob_t[k], 0)
       # transitions out of Is compartment
-      Tm_a[9,] = c(0, 0, 0, 0, 0, 0, 0, 0, 1-p_Ist[k]-inf_prob[k]-death_prob_I[k], p_Ist[k], inf_prob[k], death_prob_I[k])
+      Tm_a[9,] = c(0, 0, 0, 0, 0, 0, 0, 0, max(0,1-p_Ist[k]-inf_prob[k]-death_prob_I[k]), p_Ist[k], inf_prob[k], death_prob_I[k])
       # transitions out of Ist compartment
-      Tm_a[10,] = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 1-inf_prob_t[k]-death_prob_It[k], inf_prob_t[k], death_prob_It[k])
+      Tm_a[10,] = c(0, 0, 0, 0, 0, 0, 0, 0, 0, max(0,1-inf_prob_t[k]-death_prob_It[k]), inf_prob_t[k], death_prob_It[k])
       # transitions out of R compartment
       Tm_a[11,] = c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1-0, 0)
       # transitions out of incid_deaths compartment ---- no movement out - more of a placeholder row to pad out the matrix
@@ -885,6 +900,8 @@ pop_data = pop
   # 2% death rate data from CDC 
   symptomatic_2<- c(123,705,429,838,354,429,429)
   hosp_2<- c(3.08,146.64,121.41,307.05,224.5,121.41,121.41)
+  ICU_2<-c(0,29.61,44.62,124.94,106.86,44.62,44.62)
+  dead_ICU_2<- c(0, 0.58,1.465,11.095,16.435,1.465,1.465)
   
   num_sym = symptomatic_2
   p_hosp = hosp_2 / symptomatic_2
@@ -894,6 +911,7 @@ pop_data = pop
   p_severe = prop_sym * p_hosp # proportion severe
   p_mild = prop_sym * (1-p_hosp) # proportion mild
   
+  p_death = dead_ICU_2 / hosp_2
   
 X = setup_seir_age(c_scale_vec=1, prop_sym = prop_sym, p_hosp = p_severe, hcw.mix="45,55", hml.mix="45,55", 
                           pop = pop_data, age.limits = c(0, 20, 45, 55, 75))
@@ -912,7 +930,7 @@ delta.t = 1
 time = seq(0, time_max, delta.t)
 v = 0  ### death rate
 mu = 0 ### birth rate
-v_I = 0.1 / (3* 7) ### mortality from infection; median time to death is assumed to be 3 weeks (from WHO CHINA joint mission report)
+v_I = p_death / (3* 7) ### mortality from infection; median time to death is assumed to be 3 weeks (from WHO CHINA joint mission report)
 
 
 #plasma parameters --- first, set all the treatment rates to 0
@@ -923,7 +941,7 @@ v_I = 0.1 / (3* 7) ### mortality from infection; median time to death is assumed
 #r_it = 0
 #ef_it = 0.7
 gamma_t = rep(1 / 4, Ncomp)
-v_It = 0.05 / (3*7)
+v_It = v_I / 2
 ef_est = 0.5
 prop_ef = 0.7
 prop_eti = 0.1
@@ -1204,7 +1222,7 @@ final_plasma_all_2 <- summ_2 %>%
 
 
 
-Scenario 3 - assume we are only giving plasma only to susceptible healthworkers
+Scenario 3 - assume we are only giving plasma only to susceptible healthworkers (2,000 units of plasma available at t=0)
 
 
 ```{r, echo=FALSE}
@@ -1212,7 +1230,7 @@ Scenario 3 - assume we are only giving plasma only to susceptible healthworkers
 
 
 p0 = 2000   # number of units of plasma available at day 1
-p_s = c(0, 0, 0, 0, 0, 0.3, 0)    # proportion of plasma used allocated to susceptible 
+p_s = c(0, 0, 0, 0, 0, 1, 0)    # proportion of plasma used allocated to susceptible 
 p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
 p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
 p_im = rep(0, Ncomp)  # proportion of plasma used allocated for treatment of infected mild
@@ -1300,15 +1318,7 @@ final_plasma_all_3 <- summ_3 %>%
             ll = quantile(final_plasma, prob=c(.025)),
             ul = quantile(final_plasma, prob=c(.975)))
 
-```
 
-
-
-
-
-
-
-```{r, echo=FALSE}
 # make a combined table
 table = data.frame(t(round(final_size_all)), t(round(final_deaths_all)), t(round(final_plasma_all)), 
                    t(round(final_size_all_2)), t(round(final_deaths_all_2)), t(round(final_plasma_all_2)),
@@ -1359,3 +1369,413 @@ labs(y = "Daily cases", x = "Day", color="Legend")
 gridExtra::grid.arrange(new_inf_plot_combo, new_deaths_plot_combo, nrow = 1)
 
 ```
+
+Alternative scenario ---- all sorts of infected folks (including asymptomatic and mild), 2,000 units of plasma available
+```{r, echo=FALSE}
+#plasma parameters --- update proportion of plasma only
+
+
+p0 = 2000   # number of units of plasma available at day 1
+p_s = rep(0, Ncomp)     # proportion of plasma used allocated to susceptible 
+p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
+p_ia = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0)  # proportion of plasma used allocated for treatment of infected mild
+p_is = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0) # proportion of plasma used allocated for treatment of infected severe
+p_use = 1   # proportion of available plasma that's used 
+rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
+p_give = 0.1 # proportion of recovered people that donate plasma
+ 
+plasma_params <- list(#r_st = r_st, 
+                      #ef_st = ef_st, 
+                      #r_et = r_et, #ef_et = ef_et, 
+                      #r_it = r_it, #ef_it = ef_it, 
+                      gamma_t = gamma_t, v_It = v_It,
+                      ef_est = ef_est, prop_ef = prop_ef, 
+                      prop_eti = prop_eti,
+                      p0 = p0, p_s = p_s, p_e = p_e, 
+                      p_ia = p_ia, p_im = p_im, p_is = p_is,
+                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+
+all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+
+```
+
+
+
+
+```{r, echo=FALSE, fig.width=9}
+# Plot new infections and deaths 
+summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
+summarise(mean_inf = mean(incid_I, na.rm=TRUE),
+ll_inf= quantile(incid_I, prob=c(.025)),
+ul_inf = quantile(incid_I, prob=c(.975)),
+mean_deaths = mean(incid_deaths, na.rm=TRUE),
+ll_deaths = quantile(incid_deaths, prob = c(.025)),
+ul_deaths = quantile(incid_deaths, prob = c(.975))
+)
+
+colors = c("New infections" = "blue")
+new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_inf, color = "New infections")) +
+geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_inf_plot2
+
+
+colors = c("New deaths" = "blue")
+new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_deaths, color = "New deaths")) +
+geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_deaths_plot2
+
+gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+```
+
+```{r, echo=FALSE}
+summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+  summarise(final_size = max(cum_inf, na.rm=TRUE),
+            final_deaths = max(cum_deaths, na.rm=TRUE),
+           final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
+                                 cumsum(incid_plasma4)+cumsum(incid_plasma5)+cumsum(incid_plasma6)+
+                                 cumsum(incid_plasma7), na.rm=TRUE))
+
+
+final_size_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_size, na.rm=TRUE),
+            median = median(final_size, na.rm=TRUE),
+            ll = quantile(final_size, prob=c(.025)),
+            ul = quantile(final_size, prob=c(.975)))
+
+final_deaths_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_deaths, na.rm=TRUE),
+            median = median(final_deaths, na.rm=TRUE),
+            ll = quantile(final_deaths, prob=c(.025)),
+            ul = quantile(final_deaths, prob=c(.975)))
+
+final_plasma_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_plasma, na.rm=TRUE),
+            median = median(final_plasma, na.rm=TRUE),
+            ll = quantile(final_plasma, prob=c(.025)),
+            ul = quantile(final_plasma, prob=c(.975)))
+
+
+# make a table
+table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
+rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table) = c("Final infection size", "Final deaths from COVID")
+table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+```
+
+
+Alternative scenario 3 ---- lots of plasma to susceptibles
+```{r, echo=FALSE}
+#plasma parameters --- update proportion of plasma only
+
+
+p0 = 200000   # number of units of plasma available at day 1
+p_s = c(0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0)      # proportion of plasma used allocated to susceptible 
+p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
+p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected mild
+p_is = rep(0, Ncomp)  # proportion of plasma used allocated for treatment of infected severe
+p_use = 1   # proportion of available plasma that's used 
+rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
+p_give = 0.1 # proportion of recovered people that donate plasma
+ 
+plasma_params <- list(#r_st = r_st, 
+                      #ef_st = ef_st, 
+                      #r_et = r_et, #ef_et = ef_et, 
+                      #r_it = r_it, #ef_it = ef_it, 
+                      gamma_t = gamma_t, v_It = v_It,
+                      ef_est = ef_est, prop_ef = prop_ef, 
+                      prop_eti = prop_eti,
+                      p0 = p0, p_s = p_s, p_e = p_e, 
+                      p_ia = p_ia, p_im = p_im, p_is = p_is,
+                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+
+all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+
+```
+
+
+
+```{r, echo=FALSE, fig.width=9}
+# Plot new infections and deaths 
+summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
+summarise(mean_inf = mean(incid_I, na.rm=TRUE),
+ll_inf= quantile(incid_I, prob=c(.025)),
+ul_inf = quantile(incid_I, prob=c(.975)),
+mean_deaths = mean(incid_deaths, na.rm=TRUE),
+ll_deaths = quantile(incid_deaths, prob = c(.025)),
+ul_deaths = quantile(incid_deaths, prob = c(.975))
+)
+
+colors = c("New infections" = "blue")
+new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_inf, color = "New infections")) +
+geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_inf_plot2
+
+
+colors = c("New deaths" = "blue")
+new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_deaths, color = "New deaths")) +
+geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_deaths_plot2
+
+gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+```
+
+```{r, echo=FALSE}
+summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+  summarise(final_size = max(cum_inf, na.rm=TRUE),
+            final_deaths = max(cum_deaths, na.rm=TRUE),
+           final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
+                                 cumsum(incid_plasma4)+cumsum(incid_plasma5)+cumsum(incid_plasma6)+
+                                 cumsum(incid_plasma7), na.rm=TRUE))
+
+
+final_size_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_size, na.rm=TRUE),
+            median = median(final_size, na.rm=TRUE),
+            ll = quantile(final_size, prob=c(.025)),
+            ul = quantile(final_size, prob=c(.975)))
+
+final_deaths_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_deaths, na.rm=TRUE),
+            median = median(final_deaths, na.rm=TRUE),
+            ll = quantile(final_deaths, prob=c(.025)),
+            ul = quantile(final_deaths, prob=c(.975)))
+
+final_plasma_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_plasma, na.rm=TRUE),
+            median = median(final_plasma, na.rm=TRUE),
+            ll = quantile(final_plasma, prob=c(.025)),
+            ul = quantile(final_plasma, prob=c(.975)))
+
+
+# make a table
+table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
+rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table) = c("Final infection size", "Final deaths from COVID")
+table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+```
+
+
+Alternative scenario  ---- lots of plasma to infected (200,000 units available at t=0, proportion of plasma assigned to severely infected: 0.1, 0.2, 0.2, 0.2, 0.2, 0.1 to each compartment, respectively)
+```{r, echo=FALSE}
+#plasma parameters --- update proportion of plasma only
+
+
+p0 = 200000   # number of units of plasma available at day 1
+p_s = rep(0, Ncomp)      # proportion of plasma used allocated to susceptible 
+p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
+p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected mild
+p_is = c(0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0) # proportion of plasma used allocated for treatment of infected severe
+p_use = 1   # proportion of available plasma that's used 
+rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
+p_give = 0.1 # proportion of recovered people that donate plasma
+ 
+plasma_params <- list(#r_st = r_st, 
+                      #ef_st = ef_st, 
+                      #r_et = r_et, #ef_et = ef_et, 
+                      #r_it = r_it, #ef_it = ef_it, 
+                      gamma_t = gamma_t, v_It = v_It,
+                      ef_est = ef_est, prop_ef = prop_ef, 
+                      prop_eti = prop_eti,
+                      p0 = p0, p_s = p_s, p_e = p_e, 
+                      p_ia = p_ia, p_im = p_im, p_is = p_is,
+                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+
+all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+
+```
+
+
+
+```{r, echo=FALSE, fig.width=9}
+# Plot new infections and deaths 
+summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
+summarise(mean_inf = mean(incid_I, na.rm=TRUE),
+ll_inf= quantile(incid_I, prob=c(.025)),
+ul_inf = quantile(incid_I, prob=c(.975)),
+mean_deaths = mean(incid_deaths, na.rm=TRUE),
+ll_deaths = quantile(incid_deaths, prob = c(.025)),
+ul_deaths = quantile(incid_deaths, prob = c(.975))
+)
+
+colors = c("New infections" = "blue")
+new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_inf, color = "New infections")) +
+geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_inf_plot2
+
+
+colors = c("New deaths" = "blue")
+new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_deaths, color = "New deaths")) +
+geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_deaths_plot2
+
+gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+```
+
+```{r, echo=FALSE}
+summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+  summarise(final_size = max(cum_inf, na.rm=TRUE),
+            final_deaths = max(cum_deaths, na.rm=TRUE),
+           final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
+                                 cumsum(incid_plasma4)+cumsum(incid_plasma5)+cumsum(incid_plasma6)+
+                                 cumsum(incid_plasma7), na.rm=TRUE))
+
+
+final_size_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_size, na.rm=TRUE),
+            median = median(final_size, na.rm=TRUE),
+            ll = quantile(final_size, prob=c(.025)),
+            ul = quantile(final_size, prob=c(.975)))
+
+final_deaths_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_deaths, na.rm=TRUE),
+            median = median(final_deaths, na.rm=TRUE),
+            ll = quantile(final_deaths, prob=c(.025)),
+            ul = quantile(final_deaths, prob=c(.975)))
+
+final_plasma_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_plasma, na.rm=TRUE),
+            median = median(final_plasma, na.rm=TRUE),
+            ll = quantile(final_plasma, prob=c(.025)),
+            ul = quantile(final_plasma, prob=c(.975)))
+
+
+# make a table
+table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
+rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table) = c("Final infection size", "Final deaths from COVID")
+table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+```
+
+
+
+Alternative scenario  ---- plasma to exposed only (2,000 units available at t=0, proportion of plasma assigned to exposed: 0.1, 0.1, 0.2, 0.2, 0.2, 0.2 to each compartment, respectively)
+```{r, echo=FALSE}
+#plasma parameters --- update proportion of plasma only
+
+
+p0 = 2000   # number of units of plasma available at day 1
+p_s = rep(0, Ncomp)      # proportion of plasma used allocated to susceptible 
+p_e = c(0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0)   # proportion of plasma used allocated to exposed
+p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected mild
+p_is = rep(0, Ncomp) # proportion of plasma used allocated for treatment of infected severe
+p_use = 1   # proportion of available plasma that's used 
+rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
+p_give = 0.1 # proportion of recovered people that donate plasma
+ 
+plasma_params <- list(#r_st = r_st, 
+                      #ef_st = ef_st, 
+                      #r_et = r_et, #ef_et = ef_et, 
+                      #r_it = r_it, #ef_it = ef_it, 
+                      gamma_t = gamma_t, v_It = v_It,
+                      ef_est = ef_est, prop_ef = prop_ef, 
+                      prop_eti = prop_eti,
+                      p0 = p0, p_s = p_s, p_e = p_e, 
+                      p_ia = p_ia, p_im = p_im, p_is = p_is,
+                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+
+all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+
+```
+
+
+
+```{r, echo=FALSE, fig.width=9}
+# Plot new infections and deaths 
+summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
+summarise(mean_inf = mean(incid_I, na.rm=TRUE),
+ll_inf= quantile(incid_I, prob=c(.025)),
+ul_inf = quantile(incid_I, prob=c(.975)),
+mean_deaths = mean(incid_deaths, na.rm=TRUE),
+ll_deaths = quantile(incid_deaths, prob = c(.025)),
+ul_deaths = quantile(incid_deaths, prob = c(.975))
+)
+
+colors = c("New infections" = "blue")
+new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_inf, color = "New infections")) +
+geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_inf_plot2
+
+
+colors = c("New deaths" = "blue")
+new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_deaths, color = "New deaths")) +
+geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("New deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Daily cases", x = "Day", color="Legend")
+#new_deaths_plot2
+
+gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+```
+
+```{r, echo=FALSE}
+summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+  summarise(final_size = max(cum_inf, na.rm=TRUE),
+            final_deaths = max(cum_deaths, na.rm=TRUE),
+           final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
+                                 cumsum(incid_plasma4)+cumsum(incid_plasma5)+cumsum(incid_plasma6)+
+                                 cumsum(incid_plasma7), na.rm=TRUE))
+
+
+final_size_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_size, na.rm=TRUE),
+            median = median(final_size, na.rm=TRUE),
+            ll = quantile(final_size, prob=c(.025)),
+            ul = quantile(final_size, prob=c(.975)))
+
+final_deaths_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_deaths, na.rm=TRUE),
+            median = median(final_deaths, na.rm=TRUE),
+            ll = quantile(final_deaths, prob=c(.025)),
+            ul = quantile(final_deaths, prob=c(.975)))
+
+final_plasma_all_3 <- summ_3 %>%
+  summarise(mean = mean(final_plasma, na.rm=TRUE),
+            median = median(final_plasma, na.rm=TRUE),
+            ll = quantile(final_plasma, prob=c(.025)),
+            ul = quantile(final_plasma, prob=c(.975)))
+
+
+# make a table
+table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
+rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table) = c("Final infection size", "Final deaths from COVID")
+table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+```
+
+
+
+
+
