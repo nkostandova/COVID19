@@ -17,6 +17,10 @@ library(dplyr)
 library(tidyr)
 library(truncnorm)
 library(socialmixr)
+library(EpiEstim)
+library(matrixStats)
+
+chunk_ev = FALSE
 ```
 
 # Model 1. 
@@ -42,7 +46,7 @@ Here, we use population structure for Washington DC, with age groups broken up i
 The contact matrix used is from Polymod for UK; contacts for healthcare workers and individuals experiencing homelessness are assumed to be the same as for the 45-54 year old category.
 
 
-```{r, echo=FALSE}
+```{r, echo=TRUE}
 # initialize population; use WASH DC population
 # assume 6,000 healthcare workers and 0 individuals experiencing homelessness (put 1 to avoid any issues)
 pop = c(103095, 322685, 75453, 119406, 36199, 6000, 1)
@@ -104,7 +108,6 @@ Initial conditions and assumptions are as follows:
 
 -Everybody in the population is susceptible    
 -15 people infected in general population (1 in each compartment for asymptomatic, mild, and severe); 0 in healthcare workers  
--R0 = 2.5  
 -$\gamma$ = recovery rate = 1 / (6.5days)  
 -$\sigma$ = 1 / (5.2 days)  
 -natural death rate = 0   
@@ -122,7 +125,7 @@ For plasma, we assume
 
 
 We set the following parameters:  
--p0 = number of units of plasma available at day 1 (default, 2000)
+-p0 = number of units of plasma available at day 1 
 -$p_{use}$ = proportion of plasma available to be used (for example, not diverted towards hyperimmune globulin)  
 -$p_s$ = proportion of plasma allocated to be administered to susceptible individuals  
 -$p_e$ = proportion of plasma allocated to be administered to exposed individuals  
@@ -130,16 +133,13 @@ We set the following parameters:
 -$p_im$ = proportion of plasma allocated to be administered to infected individuals (mild)  
 -$p_is$ = proportion of plasma allocated to be administered to infected individuals (severe)  
 -$rate_p$ = rate at which plasma is donated; assumed to be 3.5 units / 14 days (assuming each person that donates gives 3.5 units)  
--$p_{give}$ = proportion of recovered individuals that give plasma (default: 0.1)
+-$p_{give}$ = proportion of recovered individuals that give plasma (default: 0.1 if in period of time when plasma is being collected)
 
-We assume that all individuals in exposed compartment will move to either asymptomatic, mild, or severe compartments. We assume that there is no excess death from COVID-19 in either asymptomatic or mild individuals. Probability of becoming symptomatic and progressing to severe disease is based on CDC data, assuming 2% mortality [CDC](https://www.cdc.gov/mmwr/volumes/69/wr/mm6912e2.htm#T1_down). 
+We assume that all individuals in exposed compartment will move to either asymptomatic, mild, or severe compartments. We assume that there is no excess death from COVID-19 in either asymptomatic or mild individuals. Probability of becoming symptomatic and progressing to severe disease is based on CDC data [CDC](https://www.cdc.gov/mmwr/volumes/69/wr/mm6912e2.htm#T1_down). 
   
 We assume rates of recovery to be the same from the three levels of different severity.  
 
-
-
-
-```{r, echo=FALSE}
+```{r, echo=TRUE}
 
 ### set up SEIR function (get W and C matrices, as well as probabilities for asymptomatic, mild, and severe infections)
 
@@ -199,274 +199,29 @@ dead_ICU_2<- c(0, 0.58,1.465,11.095,16.435,1.465,1.465)
 ```
 
 
-<!--
-```{r, echo=FALSE}
-seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
-                     params = parameters, plasma = plasma_params, 
-                     SIA_r = SIA_rates,
-                     init.min = 10, init.max = 100) {
-  
-C = params$C
-W = params$W
 
-   
-  N = params$N
+## Approach allowing for time-variable R0 and plasma administration parameters
 
-  beta = params$beta
-  gamma = params$gamma
-  sigma = params$sigma
-  time = params$time
-  delta.t = params$delta.t
-  v = params$v
-  mu = params$mu
-  v_I = params$v_I
-  
-  p_asym = params$p_asym
-  p_severe = params$p_severe
-  p_mild = params$p_mild
-  
-  gamma_t = plasma$gamma_t
-  prop_ef = plasma$prop_ef
-  ef_est = plasma$ef_est
-  prop_eti = plasma$prop_eti
-  SIA_s = SIA_r$SIA_s
-  SIA_e = SIA_r$SIA_e
-  SIA_ia = SIA_r$SIA_ia
-  SIA_im = SIA_r$SIA_im
-  SIA_is = SIA_r$SIA_is
-  
-  p0 = plasma$p0
-  p_s = plasma$p_s
-  p_e = plasma$p_e
-  p_ia = plasma$p_ia
-  p_im = plasma$p_im
-  p_is = plasma$p_is
-  p_use = plasma$p_use
-  rate_p = plasma$rate_p
-  p_give = plasma$p_give
-  
-  # set up matrix to store values
-  x = matrix(NA, nrow = length(time), ncol = Ncomp * length(ICs))
-  x[1, ]=round(ICs)
-  
-  # set initial conditions
-  if(stoch.init==TRUE){
-    Ninit = sample(init.min:init.max, 1)
-    pinit = N / sum(N)
-    Ninit_bygroup = rmultinom(1, Ninit, prob = pinit)[,1]
-    Ninit_asy = Ninit_bygroup * p_asym
-    Ninit_mild = Ninit_bygroup * p_mild
-    Ninit_severe = Ninit_bygroup * p_severe
-    ICs = c(S = N,           
-            E = rep(0, Ncomp),
-            A = Ninit_asy,
-            Im = Ninit_mild,
-            Is = Ninit_severe,
-            R = rep(0, Ncomp),
-            incid_I = rep(0, Ncomp),
-            incid_deaths = rep(0, Ncomp),
-            incid_plasma = rep(0, Ncomp))
-    x[1,] <- round(ICs)
-  }else{ x[1,] <- round(ICs) }
-  
-  S = x[, 1:Ncomp] 
-  St = x[, (Ncomp+1):(2*Ncomp)]
-  E = x[, (2*Ncomp+1):(3*Ncomp)] 
-  Et = x[, (3*Ncomp+1):(4*Ncomp)]
-  A = x[, (4*Ncomp+1):(5*Ncomp)]
-  At = x[, (5*Ncomp+1):(6*Ncomp)]
-  Im = x[, (6*Ncomp+1):(7*Ncomp)]
-  Imt = x[, (7*Ncomp+1):(8*Ncomp)]
-  Is = x[, (8*Ncomp+1):(9*Ncomp)]
-  Ist = x[, (9*Ncomp+1):(10*Ncomp)]
-  R =  x[, (10*Ncomp+1):(11*Ncomp)]
-  
-  P = matrix(NA, nrow = length(time), ncol = 1)
-  P[1, 1] = p0
-  
-  # incidence
-  incid_A = x[, (11*Ncomp+1):(12*Ncomp)]
-  incid_Im = x[, (12*Ncomp+1):(13*Ncomp)]
-  incid_Is = x[, (13*Ncomp+1):(14*Ncomp)]
-  incid_deaths = x[, (14*Ncomp+1):(15*Ncomp)]
-  incid_plasma = x[, (15*Ncomp+1):(16*Ncomp)]
-  
-  sd.dw = sd.dw
-  
-  
-  
-   out = matrix(NA, nrow = length(time), ncol = Ncomp * 11 + 5*Ncomp + 1 )
-  
-  for (it in 1:(length(time) - 1)) {
-    
-     
-  nt = rbind(S[it, ], St[it,], E[it, ], Et[it, ], A[it, ], At[it,], Im[it,], Imt[it,], Is[it,], Ist[it,], R[it,])
-  
-   # 5 = number of variables in incid matrix; 1 = plasma
-  temp = cbind(S[1,], St[1,], E[1,], Et[1,], A[1,], At[1,], Im[1,], Imt[1,], Is[1,], Ist[1,], R[1,], incid_A[1,], incid_Im[1,], incid_Is[1,], incid_deaths[1,], incid_plasma[1,])
-  temp2 =  as.vector(temp)
-  temp2 = as.vector(c(temp2,P[1,]))
-  out[1,] = temp2
-  names(out) = c(names(ICs), "plasma_units")
-  
-    WI = (C*W) %*% (A[it,]+At[it,]+Im[it,]+Imt[it,]+Is[it,]+Ist[it,])
-    births = rep(0, Ncomp)
-    births[1] = mu
-    deaths = rep(v, Ncomp)
-    ######### GOING TO NEED TO UPDATE DEATHS FROM COVID ---- age and severity (ICU / non-ICU)
-    deaths_I = rep(v_I, Ncomp)
-    deaths_It = rep(v_It, Ncomp)
-    
-    dw = rtruncnorm(Ncomp, a =0, mean = 1, sd = sd.dw)
-    
-    # transitions
-    foi_prob <- 1 - exp( - beta* WI / N * dw * delta.t)
-    exposed_prob <- 1 - exp( - sigma * delta.t)    
-    inf_prob <- 1 - exp( - gamma * delta.t)   
-    death_prob <- 1 - exp( - deaths * delta.t)
-    death_prob_I <- 1 - exp( - deaths_I * delta.t)
-    inf_prob_t <- 1 - exp(- gamma_t * delta.t * (1-prop_eti))
-    inf_prob_et <- 1 - exp( - sigma * delta.t * prop_eti)
-    death_prob_It <- 1 - exp( - deaths_It * delta.t)
-    foi_prob_St <- 1 - exp( - ef_est * beta* WI / N * dw * delta.t)
-    #exposed_prob_t <- 1 - exp( - sigma * delta.t * ef_est)   
-    
-    new_St = rep(NA, Ncomp)
-    for(i in (1:Ncomp)){
-      new_St[i] = ifelse(P[it] * p_use * p_s[i] + SIA_s[it, i]>S[it,i],  S[it, i] * prop_ef, P[it] * p_use * p_s[i] * prop_ef + SIA_s[it, i] * prop_ef)
-    }
-    p_St = ifelse(new_St == 0, 0, new_St / S[it, ])
-    
-    new_Et = rep(NA, Ncomp)
-    for(i in (1:Ncomp)){
-      new_Et[i] = ifelse(P[it] * p_use * p_e[i] + SIA_e[it, i]>E[it,i],  E[it, i] * prop_ef, P[it] * p_use * p_e[i] * prop_ef + SIA_e[it, i] * prop_ef)
-    }      
-    p_Et = ifelse(new_Et ==0, 0, new_Et / E[it, ])
-    
-    new_Iat = rep(NA, Ncomp)
-    for(i in (1:Ncomp)){
-      new_Iat[i] = ifelse(P[it] * p_use * p_ia[i] + SIA_ia[it, i]>A[it,i],  A[it, i] * prop_ef, P[it] * p_use * p_ia[i] * prop_ef + SIA_ia[it, i] * prop_ef)
-    } 
-    p_Iat = ifelse(new_Iat ==0, 0, new_Iat / A[it, ])
-    
-    new_Imt = rep(NA, Ncomp)
-    for(i in (1:Ncomp)){
-      new_Imt[i] = ifelse(P[it] * p_use * p_im[i] + SIA_im[it, i]>Im[it,i],  Im[it, i] * prop_ef, P[it] * p_use * p_im[i] * prop_ef + SIA_im[it, i] * prop_ef)
-    }  
-    p_Imt = ifelse(new_Imt ==0, 0, new_Imt / Im[it, ])
-    
-    new_Ist = rep(NA, Ncomp)
-    for(i in (1:Ncomp)){
-      new_Ist[i] = ifelse(P[it] * p_use * p_is[i] + SIA_is[it, i]>Is[it,i],  Is[it, i] * prop_ef, P[it] * p_use * p_is[i] * prop_ef + SIA_is[it, i] * prop_ef)
-    }  
-    p_Ist = ifelse(new_Ist ==0, 0, new_Ist / Is[it, ])
-    
-    
-    ## set up a transition matrix A
-    nt = rbind(S[it, ], St[it,], E[it, ], Et[it, ], A[it, ], At[it,], Im[it,], Imt[it,], Is[it,], Ist[it,], R[it,])
-    Tm = matrix(NA, nrow = dim(nt)[1], ncol = Ncomp * (dim(nt)[1]+1)) ## add one for deaths
-    z = rep(0, Ncomp)
-    
-    # transitions out of S compartment
-    Tm[1,] = c(1-p_St-t(foi_prob), p_St, t(foi_prob), z, z, z, z, z, z, z, z, z)
-    # transitions out of St compartment
-    Tm[2,] = c(z, 1-t(foi_prob_St), t(foi_prob_St), z, z, z, z, z, z, z, z, z)
-    # transitions out of E compartment
-    Tm[3,] = c(z, z, 1-p_Et-exposed_prob, p_Et, exposed_prob*p_asym, z, exposed_prob*p_mild, z, exposed_prob*p_severe, z, z, z)
-    # transitions out of Et compartment
-    Tm[4,] = c(z, z, z, 1-inf_prob_et-inf_prob_t, inf_prob_et*p_asym, z, inf_prob_et*p_mild, z, inf_prob_et*p_severe, z, inf_prob_t, z)
-    # transitions out of Ia compartment
-    Tm[5,] = c(z, z, z, z, 1-p_Iat-inf_prob, p_Iat, z, z, z, z, inf_prob, z)
-    # transitions out of Iat compartment
-    Tm[6,] = c(z, z, z, z, z, 1-inf_prob_t, z, z, z, z, inf_prob_t, z)
-    # transitions out of Im compartment
-    Tm[7,] = c(z, z, z, z, z, z, 1-p_Imt-inf_prob, p_Imt, z, z, inf_prob, z)
-    # transitions out of Imt compartment
-    Tm[8,] = c(z, z, z, z, z, z, z, 1-inf_prob_t, z, z, inf_prob_t, z)
-    # transitions out of Is compartment
-    Tm[9,] = c(z, z, z, z, z, z, z, z, 1-p_Ist-inf_prob-death_prob_I, p_Ist, inf_prob, death_prob_I)
-    # transitions out of Ist compartment
-    Tm[10,] = c(z, z, z, z, z, z, z, z, z, 1-inf_prob_t-death_prob_It, inf_prob_t, death_prob_It)
-    # transitions out of R compartment
-    Tm[11,] = c(z, z, z, z, z, z, z, z, z, z, 1-z, z)
-    
-    
-    if(stoch==TRUE){
-      # do multinomial draws
-      nstates = dim(nt)[1]+1
-      Tm = data.frame(Tm)
-      TmN = matrix(NA, nrow=nstates, ncol=Ncomp*(nstates))
-      ntp1 = matrix(NA, nrow = nstates, ncol = Ncomp)
-      incid = matrix(NA, nrow = 5, ncol=Ncomp)
-      ntp = matrix(NA, nrow = nrow(ntp1)+nrow(incid), ncol = Ncomp)
-      for (i in 1:Ncomp){
-        # separate into matrices for each compartment
-        Tm_i = Tm[, seq(i, ncol(Tm), Ncomp)]
-        # draw multinomial draws
-        TmN_i = matrix(NA, nrow = nstates-1, ncol = nstates)
-        for (j in 1:nrow(TmN_i)){
-          size = nt[j, i]
-          TmN_i[j,] = rmultinom(1, size, prob = Tm_i[j,])
-          
-        }
-        ntp1[,i] = t(colSums(TmN_i))
-        incid[1,i] = sum(TmN_i[,5])-TmN_i[5,5] # incid_A
-        incid[2,i] = sum(TmN_i[,7])-TmN_i[7,7] # incid_Im
-        incid[3,i] = sum(TmN_i[,9])-TmN_i[9,9] # incid_Is
-        #incid[4,i] = nt[9,i]-TmN_i[9,10]-TmN_i[9,11]-TmN_i[9,9]+
-        #  nt[10,i]-TmN_i[10,11]-TmN_i[10,10]  #incid_deaths
-        incid[4,i] = sum(TmN_i[,12])
-        incid[5,i] = sum(TmN_i[,2])-TmN_i[2,2]+sum(TmN_i[,4])-TmN_i[4,4]+sum(TmN_i[,6])-TmN_i[6,6]+sum(TmN_i[,8])-TmN_i[8,8]+sum(TmN_i[,10])-TmN_i[10,10] #incid_plasma
-        #ntp[1:nrow(ntp1),i] = ntp1[,i]
-        #ntp[(nrow(ntp1)+1):nrow(ntp),i] = incid[,i]
-      }
-      ntp1=ntp1[-c(12),]
-      ntp1_t = as.vector(t(ntp1))
-      incid_t = as.vector(t(incid))
-      
-      P[it+1,] = P[it,] - sum(incid[5,]) + rbinom(n = 1, size = sum(ntp1[11,]), prob = p_give*rate_p)
-      
-      out[it+1,] = c(ntp1_t, incid_t, P[it+1,])
-      
-      S[it+1,] = out[it+1, 1:Ncomp] 
-      St[it+1,] = out[it+1, (Ncomp+1):(2*Ncomp)]
-      E[it+1,] = out[it+1, (2*Ncomp+1):(3*Ncomp)] 
-      Et[it+1,] = out[it+1, (3*Ncomp+1):(4*Ncomp)]
-      A[it+1,] = out[it+1, (4*Ncomp+1):(5*Ncomp)]
-      At[it+1,] = out[it+1, (5*Ncomp+1):(6*Ncomp)]
-      Im[it+1,] = out[it+1, (6*Ncomp+1):(7*Ncomp)]
-      Imt[it+1,] = out[it+1, (7*Ncomp+1):(8*Ncomp)]
-      Is[it+1,] = out[it+1, (8*Ncomp+1):(9*Ncomp)]
-      Ist[it+1,] = out[it+1, (9*Ncomp+1):(10*Ncomp)]
-      R[it+1,] =  out[it+1, (10*Ncomp+1):(11*Ncomp)]
-      
-      # incidence
-      incid_A[it+1,] = out[it+1, (11*Ncomp+1):(12*Ncomp)]
-      incid_Im[it+1,] = out[it+1, (12*Ncomp+1):(13*Ncomp)]
-      incid_Is[it+1,] = out[it+1, (13*Ncomp+1):(14*Ncomp)]
-      incid_deaths[it+1,] = out[it+1, (14*Ncomp+1):(15*Ncomp)]
-      incid_plasma[it+1,] = out[it+1, (15*Ncomp+1):(16*Ncomp)]
-      
-      P[it+1,] = out[it+1, (16*Ncomp+1)]
-    }
-    
+Let's assume that we have the following timeline of implementing interventions:  
+- First cases detected March 7; no intervention until March 13-16, when schools were closed, restaurants and bars transitioned to carryout and delivery only, large businesses closed, social distancing was recommended
+- March 24: all nonessential businesses close  
+- March 30: stay at home order  
+- May 29: Phase I  
+- June 22: Phase II   
 
-  }
+We represent this through R0 as follows:  
+- No intervention scenario for the first 20 days (R0 = 2.5) (Note: while time from first case to closure of schools etc was 9 days, we can assume that there was delay in detection of cases) 
+- Moderate social distancing for the next 14 days (R0 = 1.73)  
+- Stay-at-home order for next 60 days (R0 = 0.96)     
+- Phase I reopening for the next 21 days (R0 = 1.04)  
+- Phase II reopening for the next 40 days (R0 = 1.3) with no administration of plasma  
+- Phase II reopening continued, with administration of plasma (here, we look at 360 days).
   
-  out2 = data.frame(cbind(time, S, St, E, Et, A, At, Im, Imt, Is, Ist, R, incid_A, incid_Im, incid_Is, incid_deaths, incid_plasma, P))
-  names(out2) = c("time", names(ICs), "plasma_units")
-  
-  return(out2) 
-}  
-
-```
--->
+We allow the following parameters to vary over time:  R0 and plasma parameters. We assume that no plasma is collected until Phase I reopening (p_{give}=0 during the first three phases, and p_{give}=0.1 of recovered individuals otherwise).
 
 
-
-
-```{r, echo=FALSE}
-seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
+```{r, echo=TRUE}
+seir_step_age_timevar = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
                          params = parameters, plasma = plasma_params, 
                          SIA_r = SIA_rates,
                          init.min = 10, init.max = 100) {
@@ -509,6 +264,7 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
   p_use = plasma$p_use
   rate_p = plasma$rate_p
   p_give = plasma$p_give
+  waning_St = plasma$waning_St
   
   # set up matrix to store values
   x = matrix(NA, nrow = length(time), ncol = Ncomp * length(ICs))
@@ -585,7 +341,7 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     dw = rtruncnorm(Ncomp, a =0, mean = 1, sd = sd.dw)
     
     # transitions
-    foi_prob <- 1 - exp( - beta* WI / N * dw * delta.t)
+    foi_prob <- 1 - exp( - beta[it,]* WI / N * dw * delta.t)
     exposed_prob <- 1 - exp( - sigma * delta.t)    
     inf_prob <- 1 - exp( - gamma * delta.t)   
     death_prob <- 1 - exp( - deaths * delta.t)
@@ -593,7 +349,8 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     inf_prob_t <- 1 - exp(- gamma_t * delta.t * (1-prop_eti))
     inf_prob_et <- 1 - exp( - sigma * delta.t * prop_eti)
     death_prob_It <- 1 - exp( - deaths_It * delta.t)
-    foi_prob_St <- 1 - exp( - ef_est * beta* WI / N * dw * delta.t)
+    foi_prob_St <- 1 - exp( - ef_est * beta[it,]* WI / N * dw * delta.t)
+    wane_St <- 1 - exp(-waning_St * delta.t)
     #exposed_prob_t <- 1 - exp( - sigma * delta.t * ef_est)   
     
     # replace any negative values with zeros
@@ -606,57 +363,36 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     inf_prob_et = replace(inf_prob_et, inf_prob_et<0, 0)
     death_prob_It = replace(death_prob_It, death_prob_It<0, 0)
     foi_prob_St = replace(foi_prob_St, foi_prob_St<0, 0)
-    
-    # plasma allocation ---- CONSIDER HOW TO DO THIS NICELY. 
-    # # 1. split between compartments based on multinomial draw
-    # size = round(P[it,] *p_use)
-    # probs_plasma = c(p_s, p_e, p_ia, p_im, p_is, 1-sum(p_s, p_e, p_ia, p_im, p_is))
-    # n_plasma = rmultinom(1, size, prob = probs_plasma)
-    # # 2. check whether any of the allocations are > number of individuals in those compartments
-    # ind = c(S[it,], E[it,], A[it,], Im[it,], Is[it,])
-    # camp = c(SIA_s[it,], SIA_e[it,], SIA_ia[it,], SIA_im[it,], SIA_is[it,])   ### campaign 
-    # for (k in 1:length(ind)){
-    #   n_plasma[k] = min(n_plasma[k]+camp[k], ind[k])
-    # }
-    # l = length(n_plasma)
-    # n_plasma[l] = round(P[it,]*p_use)-sum(n_plasma[1:(length(n_plasma)-1)])
-    # p_plasma = ifelse(ind==0, 0, n_plasma[1:(length(n_plasma)-1)] / ind)
-    # 3. Take into account that a portion of administered plasma does not have high enough titers to be effective
-    # p_eff_plasma = p_plasma * prop_ef      ### proportion of individuals that receive plasma that receive plasma with high enough titer and move on to the T compartment
-    # p_St = p_eff_plasma[1:Ncomp]
-    # p_Et = p_eff_plasma[(Ncomp+1): 2*Ncomp]
-    # p_Iat = p_eff_plasma[(2*Ncomp+1): 3*Ncomp]
-    # p_Imt = p_eff_plasma[(3*Ncomp+1): 4*Ncomp]
-    # p_Ist = p_eff_plasma[(4*Ncomp+1): 5*Ncomp]
+    wane_St = replace(wane_St, wane_St<0, 0)
     
     ## previous version of plasma allocation-- need to check this
     new_St = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_St[i] = ifelse(P[it] * p_use * p_s[i] + SIA_s[it, i]>S[it,i],  S[it, i] * prop_ef, P[it] * p_use * p_s[i] * prop_ef + SIA_s[it, i] * prop_ef)
+      new_St[i] = ifelse(P[it] * p_use[it] * p_s[it, i] + SIA_s[it, i]>S[it,i],  S[it, i] * prop_ef, P[it] * p_use[it] * p_s[it, i] * prop_ef + SIA_s[it, i] * prop_ef)
     }
     p_St = ifelse((new_St < 0 | S[it,]==0), 0, new_St / S[it, ])
     
     new_Et = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Et[i] = ifelse(P[it] * p_use * p_e[i] + SIA_e[it, i]>E[it,i],  E[it, i] * prop_ef, P[it] * p_use * p_e[i] * prop_ef + SIA_e[it, i] * prop_ef)
+      new_Et[i] = ifelse(P[it] * p_use[it] * p_e[it,i] + SIA_e[it, i]>E[it,i],  E[it, i] * prop_ef, P[it] * p_use[it] * p_e[it,i] * prop_ef + SIA_e[it, i] * prop_ef)
     }      
     p_Et = ifelse((new_Et <0 | E[it,]==0), 0, new_Et / E[it, ])
     
     new_Iat = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Iat[i] = ifelse(P[it] * p_use * p_ia[i] + SIA_ia[it, i]>A[it,i],  A[it, i] * prop_ef, P[it] * p_use * p_ia[i] * prop_ef + SIA_ia[it, i] * prop_ef)
+      new_Iat[i] = ifelse(P[it] * p_use[it] * p_ia[it,i] + SIA_ia[it, i]>A[it,i],  A[it, i] * prop_ef, P[it] * p_use[it] * p_ia[it,i] * prop_ef + SIA_ia[it, i] * prop_ef)
     } 
     p_Iat = ifelse((new_Iat <0 | A[it,]==0), 0, new_Iat / A[it, ])
     
     new_Imt = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Imt[i] = ifelse(P[it] * p_use * p_im[i] + SIA_im[it, i]>Im[it,i],  Im[it, i] * prop_ef, P[it] * p_use * p_im[i] * prop_ef + SIA_im[it, i] * prop_ef)
+      new_Imt[i] = ifelse(P[it] * p_use[it] * p_im[it,i] + SIA_im[it, i]>Im[it,i],  Im[it, i] * prop_ef, P[it] * p_use[it] * p_im[it,i] * prop_ef + SIA_im[it, i] * prop_ef)
     }  
     p_Imt = ifelse((new_Imt <0 | Im[it,]==0), 0, new_Imt / Im[it, ])
     
     new_Ist = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Ist[i] = ifelse(P[it] * p_use * p_is[i] + SIA_is[it, i]>Is[it,i],  Is[it, i] * prop_ef, P[it] * p_use * p_is[i] * prop_ef + SIA_is[it, i] * prop_ef)
+      new_Ist[i] = ifelse(P[it] * p_use[it] * p_is[it,i] + SIA_is[it, i]>Is[it,i],  Is[it, i] * prop_ef, P[it] * p_use[it] * p_is[it,i] * prop_ef + SIA_is[it, i] * prop_ef)
     }  
     p_Ist = ifelse((new_Ist <0 | Is[it,]==0), 0, new_Ist / Is[it, ])
     
@@ -673,7 +409,7 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
       # transitions out of S compartment
       Tm_a[1,] = c(max(0,1-p_St[k]-t(foi_prob[k])), p_St[k], t(foi_prob[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
       # transitions out of St compartment
-      Tm_a[2,] = c(0, max(0,1-t(foi_prob_St[k])), t(foi_prob_St[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
+      Tm_a[2,] = c(wane_St, max(0,1-t(foi_prob_St[k])), t(foi_prob_St[k]), 0, 0, 0, 0, 0, 0, 0, 0, 0)
       # transitions out of E compartment
       Tm_a[3,] = c(0, 0, max(0,1-p_Et[k]-exposed_prob[k]), p_Et[k], exposed_prob[k]*p_asym[k], 0, exposed_prob[k]*p_mild[k], 0, exposed_prob[k]*p_severe[k], 0, 0, 0)
       # transitions out of Et compartment
@@ -778,7 +514,7 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
     # update the plasma compartment
     # number of recovered individuals
     rec = round(sum(ntp1[seq(11, length(ntp1), dim(nt)[1])]))
-    P[it+1,] = P[it,] - sum(I_plasma) + rbinom(n = 1, size = rec, prob = p_give*rate_p)
+    P[it+1,] = P[it,] - sum(I_plasma) + rbinom(n = 1, size = rec, prob = p_give[it]*rate_p)
     
     # convert to a nice format for output
     temp=matrix(ntp1, ncol = Ncomp, byrow=FALSE)
@@ -823,10 +559,10 @@ seir_step_age = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp, ICs = 
 
 
 
-```{r, echo=FALSE}
+```{r, echo=TRUE}
 
 
-multiple_runs_age <- function(IC = InCs, stoch_value = TRUE, Ncomp2 = Ncomp, plasma_p = plasma_params, paramt = parameters, SIA_r = SIA_rates, nsims = 100){
+multiple_runs_age_timevar <- function(IC = InCs, stoch_value = TRUE, Ncomp2 = Ncomp, plasma_p = plasma_params, paramt = parameters, SIA_r = SIA_rates, nsims = 100){
   
 
   all_sim <- matrix(NA,1,(length(IC))+2+1) 
@@ -837,7 +573,7 @@ multiple_runs_age <- function(IC = InCs, stoch_value = TRUE, Ncomp2 = Ncomp, pla
   for(n in 1:nsims){    
     ## run the simulation one time    
   
-  single.sim =seir_step_age(stoch = stoch_value, stoch.init = FALSE, Ncomp = Ncomp2, ICs = IC, sd.dw = 0.00, 
+  single.sim =seir_step_age_timevar(stoch = stoch_value, stoch.init = FALSE, Ncomp = Ncomp2, ICs = IC, sd.dw = 0.00, 
                      params = paramt, plasma = plasma_p,
                      SIA_r = SIA_r,
                      init.min = 10, init.max = 100 ) 
@@ -885,15 +621,9 @@ multiple_runs_age <- function(IC = InCs, stoch_value = TRUE, Ncomp2 = Ncomp, pla
 ```
 
 
+```{r, echo=TRUE}
+days_steps = c(20, 14, 60, 21, 40, 360)  # vector for how long each of the steps lasts
 
-
-## Scenarios
-
-Scenario 1: no plasma is administered
-
-
-
-```{r, echo=FALSE}
 pop_data = pop
 
 
@@ -922,42 +652,57 @@ W = X$W
 C = X$C
 
 N = pop
-R0 = 2.5
+R0 = c(rep(2.5, days_steps[1]), 
+       rep(1.73, days_steps[2]), 
+       rep(0.96, days_steps[3]),
+       rep(1.04, days_steps[4]),
+       rep(1.3, days_steps[5]),
+       rep(1.3, days_steps[6]))
 gamma = rep(1 / 6.5, Ncomp)
 sigma = rep(1 / 5.2, Ncomp)
-time_max = 400
+time_max = sum(days_steps)
 delta.t = 1
 time = seq(0, time_max, delta.t)
 v = 0  ### death rate
 mu = 0 ### birth rate
 v_I = p_death / (3* 7) ### mortality from infection; median time to death is assumed to be 3 weeks (from WHO CHINA joint mission report)
 
+# calculate beta matrix; each row corresponds to time step, each column = compartment
+beta = matrix(rep(NA, (time_max)*Ncomp), ncol = Ncomp)
+for (i in 1:time_max){
+  beta[i,] = R0[i] * gamma
+}
 
 #plasma parameters --- first, set all the treatment rates to 0
-#r_st = c(0, 0)
-#ef_st = 0.7
-#r_et = c(0, 0)
-#ef_et = 0.7
-#r_it = 0
-#ef_it = 0.7
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
 prop_ef = 0.7
 prop_eti = 0.1
+waning_St = 1/160 ## assuming immunity lasts 160 days
 
-p0 = 2000   # number of units of plasma available at day 1
-p_s = rep(0, Ncomp)     # proportion of plasma used allocated to susceptible 
-p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
-p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = rep(0, Ncomp)  # proportion of plasma used allocated for treatment of infected mild
-p_is = rep(0, Ncomp) # proportion of plasma used allocated for treatment of infected severe
-p_use = 0   # proportion of available plasma that's used 
+p0 = 0   # number of units of plasma available at day 1
+p_s = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated to susceptible 
+p_e = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated to exposed
+p_ia = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated for treatment of infected mild
+p_is = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp) # proportion of plasma used allocated for treatment of infected severe
+p_use = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0, days_steps[4]),
+           rep(0, days_steps[5]),
+          rep(0, days_steps[6]))    # proportion of available plasma that's used 
 rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
+p_give = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0.1, days_steps[4]),
+           rep(0.1, days_steps[5]),
+           rep(0.1, days_steps[6]))# proportion of recovered people that donate plasma
 
 
-parameters <- list(N=N, W=W, beta = R0 * gamma, gamma=gamma, sigma=sigma, time=time, delta.t=delta.t, v = v, mu = mu, v_I = v_I, p_asym = p_asym, p_mild = p_mild, p_severe = p_severe,
+parameters <- list(N=N, W=W, beta = beta, gamma=gamma, sigma=sigma, time=time, delta.t=delta.t, v = v, mu = mu, v_I = v_I, p_asym = p_asym, p_mild = p_mild, p_severe = p_severe,
                    C = C, W = W)
 
 plasma_params <- list(#r_st = r_st, 
@@ -969,7 +714,8 @@ plasma_params <- list(#r_st = r_st,
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+                      p_use = p_use, rate_p = rate_p, p_give = p_give,
+                      waning_St = waning_St)
 
 
 # set up a mass campaign
@@ -1003,16 +749,25 @@ SIA_is[t_SIA_is, ] = val_SIA_is
 
 
 SIA_rates <- list(SIA_s = SIA_s, SIA_e = SIA_e, SIA_ia = SIA_ia, SIA_im = SIA_im, SIA_is = SIA_is)
+
+
+num_sims = 100
 ```
 
-Run single simulations - deterministic and stochastic
+
+
+
+
+
+
+<!--Run single simulations - deterministic and stochastic
 ```{r, echo=FALSE}
-single.sim =seir_step_age(stoch = TRUE, stoch.init = FALSE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
+single.sim =seir_step_age_timevar(stoch = TRUE, stoch.init = FALSE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
                      params = parameters, plasma = plasma_params,
                      SIA_r = SIA_rates,
                      init.min = 10, init.max = 100 ) 
 
-single.sim_det =seir_step_age(stoch = FALSE, stoch.init = FALSE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
+single.sim_det =seir_step_age_timevar(stoch = FALSE, stoch.init = FALSE, Ncomp = Ncomp, ICs = InCs, sd.dw = 0.00, 
                      params = parameters, plasma = plasma_params,
                      SIA_r = SIA_rates,
                      init.min = 10, init.max = 100 ) 
@@ -1031,44 +786,62 @@ single.sim_det %>% ggplot(aes(time,incidI))+geom_line()+ggtitle("Deterministic m
  single.sim_det %>% ggplot(aes(time,incid_deaths))+geom_line()+ggtitle("Deterministic model, Daily deaths, all groups")
  
 ```
-```{r, echo=FALSE}
-# plot stochastic number of infections and deaths
-single.sim_sto = single.sim %>% mutate(incidI = A1 + A2 + A3 + A4 + A5 + A6 + A7 +
-                            Im1 + Im2 + Im3 + Im4 + Im5 + Im6 + Im7 + 
-                            Is1 + Is2 + Is3 + Is4 + Is5 + Is6 + Is7,
-                            incid_deaths = incid_deaths1+incid_deaths2 + incid_deaths3 + incid_deaths4 + 
-                              incid_deaths5 + incid_deaths6 + incid_deaths7)
-single.sim_sto %>% ggplot(aes(time,incidI))+geom_line()+ggtitle("Stochastic model, Daily infectious cases, all groups")
- single.sim_sto %>% ggplot(aes(time,incid_deaths))+geom_line()+ggtitle("Stochastic model, Daily deaths, all groups")
- 
+
+
+Now run multiple simulations for the stochastic formulation --> 
+```{r, echo=TRUE, eval=chunk_ev}
+
+
+all_sim_run1 = suppressWarnings(multiple_runs_age_timevar(nsims = num_sims, stoch = TRUE))
+write.csv(all_sim_run1, "all_sim_run1.csv")
 ```
 
-
-Now run multiple simulations for the stochastic formulation
-```{r, echo=FALSE}
-
-num_sims = 100
-all_sim_run1 = suppressWarnings(multiple_runs_age(nsims = num_sims, stoch = TRUE))
-```
-
-```{r, echo=FALSE, fig.width=9}
+```{r, echo=TRUE, fig.width=9, results="hide"}
 # Plot new infections and deaths 
+all_sim_run1 = read.csv("all_sim_run1.csv")
 summ_days_run1 = all_sim_run1 %>% drop_na() %>% group_by(time) %>%
 summarise(mean_inf = mean(incid_I, na.rm=TRUE),
 ll_inf= quantile(incid_I, prob=c(.025), na.rm=TRUE),
 ul_inf = quantile(incid_I, prob=c(.975), na.rm = TRUE),
 mean_deaths = mean(incid_deaths, na.rm=TRUE),
 ll_deaths = quantile(incid_deaths, prob = c(.025), na.rm=TRUE),
-ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE)
+ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE),
+mean_cum_inf = mean(cum_inf, na.rm=TRUE),
+ll_cum_inf = quantile(cum_inf, prob=c(.025), na.rm=TRUE),
+ul_cum_inf = quantile(cum_inf, prob=c(.975), na.rm=TRUE),
+mean_cum_deaths = mean(cum_deaths, na.rm=TRUE),
+ll_cum_deaths = quantile(cum_deaths, prob=c(.025), na.rm=TRUE),
+ul_cum_deaths = quantile(cum_deaths, prob=c(.975), na.rm=TRUE),
+mean_cum_infA = mean(cum_infA, na.rm=TRUE),
+ll_cum_infA = quantile(cum_infA, prob=c(.025), na.rm=TRUE),
+ul_cum_infA = quantile(cum_infA, prob=c(.975), na.rm=TRUE),
+mean_cum_infM = mean(cum_infM, na.rm=TRUE),
+ll_cum_infM = quantile(cum_infM, prob=c(.025), na.rm=TRUE),
+ul_cum_infM = quantile(cum_infM, prob=c(.975), na.rm=TRUE),
+mean_cum_infS = mean(cum_infS, na.rm=TRUE),
+ll_cum_infS = quantile(cum_infS, prob=c(.025), na.rm=TRUE),
+ul_cum_infS = quantile(cum_infS, prob=c(.975), na.rm=TRUE)
 )
+```
 
+```{r, results="hide"}
 colors = c("New infections" = "blue")
 new_inf_plot<-ggplot(data=summ_days_run1, aes(x=time)) +
 geom_line(aes(y = mean_inf, color = "New infections")) +
 geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New infections") +   theme_classic() +
 scale_color_manual(values = colors)+
-labs(y = "Daily cases", x = "Day", color="Legend")
+labs(y = "Daily cases", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 #new_inf_plot
 
 
@@ -1078,16 +851,78 @@ geom_line(aes(y = mean_deaths, color = "New deaths")) +
 geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New deaths") +   theme_classic() +
 scale_color_manual(values = colors)+
-labs(y = "Daily cases", x = "Day", color="Legend")
+labs(y = "Daily cases", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 #new_deaths_plot
 
 gridExtra::grid.arrange(new_inf_plot, new_deaths_plot, nrow = 1)
 ```
 
 
+```{r, results="hide"}
+# plot cumulative infections and deaths
+
+colors = c("Cumulative infections" = "blue",
+           "Cumulative asymptomatic infections" = "green",
+           "Cumulative mild infections" = "orange",
+           "Cumulative severe infections" = "brown")
+cum_inf_plot<-ggplot(data=summ_days_run1, aes(x=time)) +
+geom_line(aes(y = mean_cum_inf, color = "Cumulative infections")) +
+  geom_line(aes(y = mean_cum_infA, color = "Cumulative asymptomatic infections")) +
+   geom_line(aes(y = mean_cum_infM, color = "Cumulative mild infections")) +
+     geom_line(aes(y = mean_cum_infS, color = "Cumulative severe infections")) +
+geom_ribbon(aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+    geom_ribbon(aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="orange", linetype=2, alpha=0.1) +
+      geom_ribbon(aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="brown", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+
+# plot cumulative deaths
+
+colors = c("Cumulative deaths" = "blue")
+cum_deaths_plot<-ggplot(data=summ_days_run1, aes(x=time)) +
+geom_line(aes(y = mean_cum_deaths, color = "Cumulative deaths")) +
+geom_ribbon(aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot, cum_deaths_plot, nrow = 2)
+
+```
 <!-- # Look at final size, severe infections, and deaths from `r num_sims` simulations --> 
 
-```{r, echo=FALSE}
+```{r, echo=TRUE, results="hide"}
 summ_ <- all_sim_run1 %>% group_by(run_index) %>% 
   summarise(final_size = max(cum_inf, na.rm=TRUE),
             final_deaths = max(cum_deaths, na.rm=TRUE),
@@ -1121,27 +956,46 @@ table %>% kable() %>% kable_styling(c("basic", "scale_down"))
 
 ```
 
+Scenario 2 - give 100% plasma to severe infectious people at day 40 of phase II reopening
 
 
 
+```{r, echo=TRUE}
 
+#plasma parameters --- first, set all the treatment rates to 0
+gamma_t = rep(1 / 4, Ncomp)
+v_It = v_I / 2
+ef_est = 0.5
+prop_ef = 0.7
+prop_eti = 0.1
+waning_St = 1/160 ## assuming immunity lasts 160 days
 
+p0 = 0   # number of units of plasma available at day 1
+p_s = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated to susceptible 
+p_e = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated to exposed
+p_ia = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated for treatment of infected mild
 
-Scenario 2 - assume we are only treating individuals in I severe; (100% of available plasma goes to severe infectious people - 0.1 in each of first 2 groups, 0.2 in last 3 groups, and 0.2 to healthcare workers)
-```{r, echo=FALSE}
-#plasma parameters --- update proportion of plasma only
+p_is = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp) # proportion of plasma used allocated for treatment of infected severe
+# update the last section to include plasma administration
+for (i in (nrow(p_is)-days_steps[6]):nrow(p_is)){
+p_is[i,] = c(0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0) 
+}
 
-
-p0 = 2000   # number of units of plasma available at day 1
-p_s = rep(0, Ncomp)     # proportion of plasma used allocated to susceptible 
-p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
-p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = rep(0, Ncomp)  # proportion of plasma used allocated for treatment of infected mild
-p_is = c(0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0) # proportion of plasma used allocated for treatment of infected severe
-p_use = 1   # proportion of available plasma that's used 
+p_use = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0, days_steps[4]),
+           rep(0, days_steps[5]),
+          rep(1, days_steps[6]))    # proportion of available plasma that's used 
 rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
- 
+p_give = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0.1, days_steps[4]),
+           rep(0.1, days_steps[5]),
+           rep(0.1, days_steps[6]))# proportion of recovered people that donate plasma
+
 plasma_params <- list(#r_st = r_st, 
                       #ef_st = ef_st, 
                       #r_et = r_et, #ef_et = ef_et, 
@@ -1151,24 +1005,47 @@ plasma_params <- list(#r_st = r_st,
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+                      p_use = p_use, rate_p = rate_p, p_give = p_give,
+                      waning_St = waning_St)
+```
 
-all_sim_run2 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+```{r, echo=TRUE, eval = chunk_ev}
+
+all_sim_run2 = suppressWarnings(multiple_runs_age_timevar(nsims = num_sims, stoch = TRUE))
+write.csv(all_sim_run2, "all_sim_run2.csv")
 
 ```
 
 
-```{r, echo=FALSE, fig.width=9}
+```{r, echo=TRUE, fig.width=9, results="hide"}
+all_sim_run2 = read.csv("all_sim_run2.csv")
 # Plot new infections and deaths 
 summ_days_run2 = all_sim_run2 %>% drop_na() %>% group_by(time) %>%
 summarise(mean_inf = mean(incid_I, na.rm=TRUE),
-ll_inf= quantile(incid_I, prob=c(.025)),
-ul_inf = quantile(incid_I, prob=c(.975)),
+ll_inf= quantile(incid_I, prob=c(.025), na.rm=TRUE),
+ul_inf = quantile(incid_I, prob=c(.975), na.rm = TRUE),
 mean_deaths = mean(incid_deaths, na.rm=TRUE),
-ll_deaths = quantile(incid_deaths, prob = c(.025)),
-ul_deaths = quantile(incid_deaths, prob = c(.975))
+ll_deaths = quantile(incid_deaths, prob = c(.025), na.rm=TRUE),
+ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE),
+mean_cum_inf = mean(cum_inf, na.rm=TRUE),
+ll_cum_inf = quantile(cum_inf, prob=c(.025), na.rm=TRUE),
+ul_cum_inf = quantile(cum_inf, prob=c(.975), na.rm=TRUE),
+mean_cum_deaths = mean(cum_deaths, na.rm=TRUE),
+ll_cum_deaths = quantile(cum_deaths, prob=c(.025), na.rm=TRUE),
+ul_cum_deaths = quantile(cum_deaths, prob=c(.975), na.rm=TRUE),
+mean_cum_infA = mean(cum_infA, na.rm=TRUE),
+ll_cum_infA = quantile(cum_infA, prob=c(.025), na.rm=TRUE),
+ul_cum_infA = quantile(cum_infA, prob=c(.975), na.rm=TRUE),
+mean_cum_infM = mean(cum_infM, na.rm=TRUE),
+ll_cum_infM = quantile(cum_infM, prob=c(.025), na.rm=TRUE),
+ul_cum_infM = quantile(cum_infM, prob=c(.975), na.rm=TRUE),
+mean_cum_infS = mean(cum_infS, na.rm=TRUE),
+ll_cum_infS = quantile(cum_infS, prob=c(.025), na.rm=TRUE),
+ul_cum_infS = quantile(cum_infS, prob=c(.975), na.rm=TRUE)
 )
+```
 
+```{r, results="hide"}
 colors = c("New infections" = "blue")
 new_inf_plot2<-ggplot(data=summ_days_run2, aes(x=time)) +
 geom_line(aes(y = mean_inf, color = "New infections")) +
@@ -1191,7 +1068,63 @@ labs(y = "Daily cases", x = "Day", color="Legend")
 gridExtra::grid.arrange(new_inf_plot2, new_deaths_plot2, nrow = 1)
 ```
 
-```{r, echo=FALSE}
+
+```{r, results="hide"}
+# plot cumulative infections and deaths
+
+colors = c("Cumulative infections" = "blue",
+           "Cumulative asymptomatic infections" = "green",
+           "Cumulative mild infections" = "orange",
+           "Cumulative severe infections" = "brown")
+cum_inf_plot2<-ggplot(data=summ_days_run2, aes(x=time)) +
+geom_line(aes(y = mean_cum_inf, color = "Cumulative infections")) +
+  geom_line(aes(y = mean_cum_infA, color = "Cumulative asymptomatic infections")) +
+   geom_line(aes(y = mean_cum_infM, color = "Cumulative mild infections")) +
+     geom_line(aes(y = mean_cum_infS, color = "Cumulative severe infections")) +
+geom_ribbon(aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+    geom_ribbon(aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="orange", linetype=2, alpha=0.1) +
+      geom_ribbon(aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="brown", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+
+# plot cumulative deaths
+
+colors = c("Cumulative deaths" = "blue")
+cum_deaths_plot2<-ggplot(data=summ_days_run2, aes(x=time)) +
+geom_line(aes(y = mean_cum_deaths, color = "Cumulative deaths")) +
+geom_ribbon(aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot2, cum_deaths_plot2, nrow = 2)
+
+```
+
+
+```{r, echo=TRUE, results="hide"}
 summ_2 <- all_sim_run2 %>% group_by(run_index) %>% 
   summarise(final_size = max(cum_inf, na.rm=TRUE),
             final_deaths = max(cum_deaths, na.rm=TRUE),
@@ -1217,28 +1150,56 @@ final_plasma_all_2 <- summ_2 %>%
             ll = quantile(final_plasma, prob=c(.025)),
             ul = quantile(final_plasma, prob=c(.975)))
 
+
+# make a table
+table2 = data.frame(t(round(final_size_all_2)), t(round(final_deaths_all_2)))
+rownames(table2) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table2) = c("Final infection size", "Final deaths from COVID")
+table2 %>% kable() %>% kable_styling(c("basic", "scale_down"))
 ```
 
 
 
-
-Scenario 3 - assume we are only giving plasma only to susceptible healthworkers (2,000 units of plasma available at t=0)
-
-
-```{r, echo=FALSE}
-#plasma parameters --- update S only
+Scenario 3 - give 100% plasma to susceptible health workers at day 40 of phase II reopening
 
 
-p0 = 2000   # number of units of plasma available at day 1
-p_s = c(0, 0, 0, 0, 0, 1, 0)    # proportion of plasma used allocated to susceptible 
-p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
-p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = rep(0, Ncomp)  # proportion of plasma used allocated for treatment of infected mild
-p_is = rep(0, Ncomp) # proportion of plasma used allocated for treatment of infected severe
-p_use = 1   # proportion of available plasma that's used 
+
+```{r, echo=TRUE}
+
+#plasma parameters --- first, set all the treatment rates to 0
+gamma_t = rep(1 / 4, Ncomp)
+v_It = v_I / 2
+ef_est = 0.5
+prop_ef = 0.7
+prop_eti = 0.1
+waning_St = 1/160 ## assuming immunity lasts 160 days
+
+p0 = 0   # number of units of plasma available at day 1
+p_s = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated to susceptible 
+# update the last section to include plasma administration
+for (i in (nrow(p_s)-days_steps[6]):nrow(p_s)){
+p_s[i,] = c(0, 0, 0, 0, 0, 1, 0) 
+}
+
+p_e = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated to exposed
+p_ia = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+p_im = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated for treatment of infected mild
+p_is = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp) # proportion of plasma used allocated for treatment of infected severe
+
+p_use = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0, days_steps[4]),
+           rep(0, days_steps[5]),
+          rep(1, days_steps[6]))    # proportion of available plasma that's used 
 rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
- 
+p_give = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0.1, days_steps[4]),
+           rep(0.1, days_steps[5]),
+           rep(0.1, days_steps[6]))# proportion of recovered people that donate plasma
+
 
 plasma_params <- list(#r_st = r_st, 
                       #ef_st = ef_st, 
@@ -1249,26 +1210,49 @@ plasma_params <- list(#r_st = r_st,
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
-
-
-
-
-all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params, paramt = parameters))
+                      p_use = p_use, rate_p = rate_p, p_give = p_give,
+                      waning_St = waning_St)
 
 ```
 
-```{r, echo=FALSE, fig.width=9}
+```{r, echo=TRUE, eval = chunk_ev}
+
+all_sim_run3 = suppressWarnings(multiple_runs_age_timevar(nsims = num_sims, stoch = TRUE))
+write.csv(all_sim_run3, "all_sim_run3.csv")
+
+```
+
+
+```{r, echo=TRUE, fig.width=9, results="hide"}
+all_sim_run3 = read.csv("all_sim_run3.csv")
+
 # Plot new infections and deaths 
 summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
 summarise(mean_inf = mean(incid_I, na.rm=TRUE),
-ll_inf= quantile(incid_I, prob=c(.025)),
-ul_inf = quantile(incid_I, prob=c(.975)),
+ll_inf= quantile(incid_I, prob=c(.025), na.rm=TRUE),
+ul_inf = quantile(incid_I, prob=c(.975), na.rm = TRUE),
 mean_deaths = mean(incid_deaths, na.rm=TRUE),
-ll_deaths = quantile(incid_deaths, prob = c(.025)),
-ul_deaths = quantile(incid_deaths, prob = c(.975))
+ll_deaths = quantile(incid_deaths, prob = c(.025), na.rm=TRUE),
+ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE),
+mean_cum_inf = mean(cum_inf, na.rm=TRUE),
+ll_cum_inf = quantile(cum_inf, prob=c(.025), na.rm=TRUE),
+ul_cum_inf = quantile(cum_inf, prob=c(.975), na.rm=TRUE),
+mean_cum_deaths = mean(cum_deaths, na.rm=TRUE),
+ll_cum_deaths = quantile(cum_deaths, prob=c(.025), na.rm=TRUE),
+ul_cum_deaths = quantile(cum_deaths, prob=c(.975), na.rm=TRUE),
+mean_cum_infA = mean(cum_infA, na.rm=TRUE),
+ll_cum_infA = quantile(cum_infA, prob=c(.025), na.rm=TRUE),
+ul_cum_infA = quantile(cum_infA, prob=c(.975), na.rm=TRUE),
+mean_cum_infM = mean(cum_infM, na.rm=TRUE),
+ll_cum_infM = quantile(cum_infM, prob=c(.025), na.rm=TRUE),
+ul_cum_infM = quantile(cum_infM, prob=c(.975), na.rm=TRUE),
+mean_cum_infS = mean(cum_infS, na.rm=TRUE),
+ll_cum_infS = quantile(cum_infS, prob=c(.025), na.rm=TRUE),
+ul_cum_infS = quantile(cum_infS, prob=c(.975), na.rm=TRUE)
 )
+```
 
+```{r, results="hide"}
 colors = c("New infections" = "blue")
 new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
 geom_line(aes(y = mean_inf, color = "New infections")) +
@@ -1291,7 +1275,9 @@ labs(y = "Daily cases", x = "Day", color="Legend")
 gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
 ```
 
-```{r, echo=FALSE}
+
+
+```{r, echo=TRUE, results="true"}
 summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
   summarise(final_size = max(cum_inf, na.rm=TRUE),
             final_deaths = max(cum_deaths, na.rm=TRUE),
@@ -1320,23 +1306,77 @@ final_plasma_all_3 <- summ_3 %>%
 
 
 # make a combined table
-table = data.frame(t(round(final_size_all)), t(round(final_deaths_all)), t(round(final_plasma_all)), 
+table_combo1 = data.frame(t(round(final_size_all)), t(round(final_deaths_all)), t(round(final_plasma_all)), 
                    t(round(final_size_all_2)), t(round(final_deaths_all_2)), t(round(final_plasma_all_2)),
                    t(round(final_size_all_3)), t(round(final_deaths_all_3)), t(round(final_plasma_all_3)))
-rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
-colnames(table) = c("Final infection size", "Final deaths from COVID", "Number receiving plasma",
+rownames(table_combo1) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table_combo1) = c("Final infection size", "Final deaths from COVID", "Number receiving plasma",
                     "Final infection size", "Final deaths from COVID", "Number receiving plasma",
                     "Final infection size", "Final deaths from COVID", "Number receiving plasma")
-table %>% kable() %>% kable_styling(c("basic", "scale_down")) %>%
+table_combo1 %>% kable() %>% kable_styling(c("basic", "scale_down")) %>%
   add_header_above(c(" " = 1, "Scenario 1" = 3, "Scenario 2" = 3, "Scenario 3" = 3)) %>%
   footnote(general = "Scenario 1 = no plasma intervention; \n 
-           Scenario 2 = plasma treatment to infectious compartment only; \n
+           Scenario 2 = plasma treatment to severe infectious compartment only; \n
            Scenario 3 = plasma treatment to susceptible health workers only")
 
 ```
 
 
-```{r, echo=FALSE, fig.width = 9}
+```{r, results="hide"}
+# plot cumulative infections and deaths
+
+colors = c("Cumulative infections" = "blue",
+           "Cumulative asymptomatic infections" = "green",
+           "Cumulative mild infections" = "orange",
+           "Cumulative severe infections" = "brown")
+cum_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_cum_inf, color = "Cumulative infections")) +
+  geom_line(aes(y = mean_cum_infA, color = "Cumulative asymptomatic infections")) +
+   geom_line(aes(y = mean_cum_infM, color = "Cumulative mild infections")) +
+     geom_line(aes(y = mean_cum_infS, color = "Cumulative severe infections")) +
+geom_ribbon(aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+    geom_ribbon(aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="orange", linetype=2, alpha=0.1) +
+      geom_ribbon(aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="brown", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+
+# plot cumulative deaths
+
+colors = c("Cumulative deaths" = "blue")
+cum_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+geom_line(aes(y = mean_cum_deaths, color = "Cumulative deaths")) +
+geom_ribbon(aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=75), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=75), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=75), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=75), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=75), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot3, cum_deaths_plot3, nrow = 2)
+
+```
+
+```{r, echo=TRUE, fig.width = 9, warning=FALSE}
 # combine the scenarios on a plot
 
 colors = c("Scenario 1" = "blue",
@@ -1351,7 +1391,18 @@ geom_ribbon(data = summ_days_run2, aes(ymin=ll_inf, ymax=ul_inf), fill="red", li
 geom_ribbon(data = summ_days_run3, aes(ymin=ll_inf, ymax=ul_inf), fill="green", linetype=2, alpha=0.1) +
 ggtitle("New infections") +   theme_classic() +
 scale_color_manual(values = colors)+
-labs(y = "Daily cases", x = "Day", color="Legend")
+labs(y = "Daily cases", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 #new_inf_plot_combo
 
 
@@ -1364,27 +1415,192 @@ geom_line(data = summ_days_run3, aes(y = mean_deaths, color = "Scenario 3")) +
 geom_ribbon(data = summ_days_run3, aes(ymin=ll_deaths, ymax=ul_deaths), fill="green", linetype=2, alpha=0.1) +
 ggtitle("New deaths") +   theme_classic() +
 scale_color_manual(values = colors)+
-labs(y = "Daily cases", x = "Day", color="Legend")
+labs(y = "Daily cases", x = "Day", color="Legend") + 
+   geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 
 gridExtra::grid.arrange(new_inf_plot_combo, new_deaths_plot_combo, nrow = 1)
 
 ```
 
-Alternative scenario ---- all sorts of infected folks (including asymptomatic and mild), 2,000 units of plasma available
-```{r, echo=FALSE}
-#plasma parameters --- update proportion of plasma only
+```{r}
+# Plot cumulative infections and deaths
+cum_inf_plot_combo<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run1, aes(y = mean_cum_inf, color = "Scenario 1")) +
+geom_ribbon(data = summ_days_run1, aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run2, aes(y = mean_cum_inf, color = "Scenario 2")) +
+geom_ribbon(data = summ_days_run2, aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run3, aes(y = mean_cum_inf, color = "Scenario 3")) +
+geom_ribbon(data = summ_days_run3, aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+# cumulative asymptomatic infections
+cum_infA_plot_combo<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run1, aes(y = mean_cum_infA, color = "Scenario 1")) +
+geom_ribbon(data = summ_days_run1, aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run2, aes(y = mean_cum_infA, color = "Scenario 2")) +
+geom_ribbon(data = summ_days_run2, aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run3, aes(y = mean_cum_infA, color = "Scenario 3")) +
+geom_ribbon(data = summ_days_run3, aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative asymptomatic infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+cum_infM_plot_combo<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run1, aes(y = mean_cum_infM, color = "Scenario 1")) +
+geom_ribbon(data = summ_days_run1, aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run2, aes(y = mean_cum_infM, color = "Scenario 2")) +
+geom_ribbon(data = summ_days_run2, aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run3, aes(y = mean_cum_infM, color = "Scenario 3")) +
+geom_ribbon(data = summ_days_run3, aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative mild infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+cum_infS_plot_combo<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run1, aes(y = mean_cum_infS, color = "Scenario 1")) +
+geom_ribbon(data = summ_days_run1, aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run2, aes(y = mean_cum_infS, color = "Scenario 2")) +
+geom_ribbon(data = summ_days_run2, aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run3, aes(y = mean_cum_infS, color = "Scenario 3")) +
+geom_ribbon(data = summ_days_run3, aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative severe infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 
 
-p0 = 2000   # number of units of plasma available at day 1
-p_s = rep(0, Ncomp)     # proportion of plasma used allocated to susceptible 
-p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
-p_ia = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0)  # proportion of plasma used allocated for treatment of infected mild
-p_is = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0) # proportion of plasma used allocated for treatment of infected severe
-p_use = 1   # proportion of available plasma that's used 
+
+cum_deaths_plot_combo<-ggplot(data=NULL, aes(x=time)) +
+geom_line(data = summ_days_run1, aes(y = mean_cum_deaths, color = "Scenario 1")) +
+geom_ribbon(data = summ_days_run1, aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+geom_line(data = summ_days_run2, aes(y = mean_cum_deaths, color = "Scenario 2")) +
+geom_ribbon(data = summ_days_run2, aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="red", linetype=2, alpha=0.1) + 
+geom_line(data = summ_days_run3, aes(y = mean_cum_deaths, color = "Scenario 3")) +
+geom_ribbon(data = summ_days_run3, aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + 
+   geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot_combo, cum_infA_plot_combo, cum_infM_plot_combo, cum_infS_plot_combo, cum_deaths_plot_combo, nrow = 3)
+```
+
+
+
+
+Scenario 4 - give 100% plasma to infectious individuals at day 40 of phase II reopening
+
+
+
+```{r, echo=TRUE}
+
+#plasma parameters 
+gamma_t = rep(1 / 4, Ncomp)
+v_It = v_I / 2
+ef_est = 0.5
+prop_ef = 0.7
+prop_eti = 0.1
+waning_St = 1/160 ## assuming immunity lasts 160 days
+
+p0 = 0   # number of units of plasma available at day 1
+p_s = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated to susceptible 
+p_e = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated to exposed
+
+p_ia = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
+# update the last section to include plasma administration
+for (i in (nrow(p_ia)-days_steps[6]):nrow(p_ia)){
+p_ia[i,] = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0) 
+}
+
+p_im = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated for treatment of infected mild
+for (i in (nrow(p_im)-days_steps[6]):nrow(p_im)){
+p_im[i,] = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0) 
+}
+
+p_is = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp) # proportion of plasma used allocated for treatment of infected severe
+for (i in (nrow(p_is)-days_steps[6]):nrow(p_is)){
+p_is[i,] = c(0.05, 0.05, 0.05, 0.05, 0.05, 0.1, 0) 
+}
+
+p_use = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0, days_steps[4]),
+           rep(0, days_steps[5]),
+          rep(1, days_steps[6]))    # proportion of available plasma that's used 
 rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
- 
+p_give = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0.1, days_steps[4]),
+           rep(0.1, days_steps[5]),
+           rep(0.1, days_steps[6]))# proportion of recovered people that donate plasma
+
 plasma_params <- list(#r_st = r_st, 
                       #ef_st = ef_st, 
                       #r_et = r_et, #ef_et = ef_et, 
@@ -1394,28 +1610,50 @@ plasma_params <- list(#r_st = r_st,
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
+                      p_use = p_use, rate_p = rate_p, p_give = p_give,
+                      waning_St = waning_St)
 
-all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+```
+```{r, echo=TRUE, eval = chunk_ev}
 
+all_sim_run4 = suppressWarnings(multiple_runs_age_timevar(nsims = num_sims, stoch = TRUE))
+write.csv(all_sim_run4, "all_sim_run4.csv")
 ```
 
 
+```{r, echo=TRUE, fig.width=9, results="hide"}
 
-
-```{r, echo=FALSE, fig.width=9}
+all_sim_run4 = read.csv("all_sim_run4.csv")
 # Plot new infections and deaths 
-summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
-summarise(mean_inf = mean(incid_I, na.rm=TRUE),
-ll_inf= quantile(incid_I, prob=c(.025)),
-ul_inf = quantile(incid_I, prob=c(.975)),
+summ_days_run4 = all_sim_run4 %>% drop_na() %>% group_by(time) %>%
+  summarise(mean_inf = mean(incid_I, na.rm=TRUE),
+ll_inf= quantile(incid_I, prob=c(.025), na.rm=TRUE),
+ul_inf = quantile(incid_I, prob=c(.975), na.rm = TRUE),
 mean_deaths = mean(incid_deaths, na.rm=TRUE),
-ll_deaths = quantile(incid_deaths, prob = c(.025)),
-ul_deaths = quantile(incid_deaths, prob = c(.975))
+ll_deaths = quantile(incid_deaths, prob = c(.025), na.rm=TRUE),
+ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE),
+mean_cum_inf = mean(cum_inf, na.rm=TRUE),
+ll_cum_inf = quantile(cum_inf, prob=c(.025), na.rm=TRUE),
+ul_cum_inf = quantile(cum_inf, prob=c(.975), na.rm=TRUE),
+mean_cum_deaths = mean(cum_deaths, na.rm=TRUE),
+ll_cum_deaths = quantile(cum_deaths, prob=c(.025), na.rm=TRUE),
+ul_cum_deaths = quantile(cum_deaths, prob=c(.975), na.rm=TRUE),
+mean_cum_infA = mean(cum_infA, na.rm=TRUE),
+ll_cum_infA = quantile(cum_infA, prob=c(.025), na.rm=TRUE),
+ul_cum_infA = quantile(cum_infA, prob=c(.975), na.rm=TRUE),
+mean_cum_infM = mean(cum_infM, na.rm=TRUE),
+ll_cum_infM = quantile(cum_infM, prob=c(.025), na.rm=TRUE),
+ul_cum_infM = quantile(cum_infM, prob=c(.975), na.rm=TRUE),
+mean_cum_infS = mean(cum_infS, na.rm=TRUE),
+ll_cum_infS = quantile(cum_infS, prob=c(.025), na.rm=TRUE),
+ul_cum_infS = quantile(cum_infS, prob=c(.975), na.rm=TRUE)
 )
 
+```
+
+```{r}
 colors = c("New infections" = "blue")
-new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+new_inf_plot4<-ggplot(data=summ_days_run4, aes(x=time)) +
 geom_line(aes(y = mean_inf, color = "New infections")) +
 geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New infections") +   theme_classic() +
@@ -1425,7 +1663,7 @@ labs(y = "Daily cases", x = "Day", color="Legend")
 
 
 colors = c("New deaths" = "blue")
-new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+new_deaths_plot4<-ggplot(data=summ_days_run4, aes(x=time)) +
 geom_line(aes(y = mean_deaths, color = "New deaths")) +
 geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New deaths") +   theme_classic() +
@@ -1433,11 +1671,64 @@ scale_color_manual(values = colors)+
 labs(y = "Daily cases", x = "Day", color="Legend")
 #new_deaths_plot2
 
-gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+gridExtra::grid.arrange(new_inf_plot4, new_deaths_plot4, nrow = 1)
 ```
 
-```{r, echo=FALSE}
-summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+```{r, results="hide"}
+# plot cumulative infections and deaths
+
+colors = c("Cumulative infections" = "blue",
+           "Cumulative asymptomatic infections" = "green",
+           "Cumulative mild infections" = "orange",
+           "Cumulative severe infections" = "brown")
+cum_inf_plot4<-ggplot(data=summ_days_run4, aes(x=time)) +
+geom_line(aes(y = mean_cum_inf, color = "Cumulative infections")) +
+  geom_line(aes(y = mean_cum_infA, color = "Cumulative asymptomatic infections")) +
+   geom_line(aes(y = mean_cum_infM, color = "Cumulative mild infections")) +
+     geom_line(aes(y = mean_cum_infS, color = "Cumulative severe infections")) +
+geom_ribbon(aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+    geom_ribbon(aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="orange", linetype=2, alpha=0.1) +
+      geom_ribbon(aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="brown", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+
+# plot cumulative deaths
+
+colors = c("Cumulative deaths" = "blue")
+cum_deaths_plot4<-ggplot(data=summ_days_run4, aes(x=time)) +
+geom_line(aes(y = mean_cum_deaths, color = "Cumulative deaths")) +
+geom_ribbon(aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=25), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=25), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=25), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=25), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=25), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot4, cum_deaths_plot4, nrow = 2)
+
+```
+```{r, echo=TRUE, results="hide"}
+summ_4 <- all_sim_run4 %>% group_by(run_index) %>% 
   summarise(final_size = max(cum_inf, na.rm=TRUE),
             final_deaths = max(cum_deaths, na.rm=TRUE),
            final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
@@ -1445,48 +1736,78 @@ summ_3 <- all_sim_run3 %>% group_by(run_index) %>%
                                  cumsum(incid_plasma7), na.rm=TRUE))
 
 
-final_size_all_3 <- summ_3 %>%
+final_size_all_4 <- summ_4 %>%
   summarise(mean = mean(final_size, na.rm=TRUE),
             median = median(final_size, na.rm=TRUE),
             ll = quantile(final_size, prob=c(.025)),
             ul = quantile(final_size, prob=c(.975)))
 
-final_deaths_all_3 <- summ_3 %>%
+final_deaths_all_4 <- summ_4 %>%
   summarise(mean = mean(final_deaths, na.rm=TRUE),
             median = median(final_deaths, na.rm=TRUE),
             ll = quantile(final_deaths, prob=c(.025)),
             ul = quantile(final_deaths, prob=c(.975)))
 
-final_plasma_all_3 <- summ_3 %>%
+final_plasma_all_4 <- summ_4 %>%
   summarise(mean = mean(final_plasma, na.rm=TRUE),
             median = median(final_plasma, na.rm=TRUE),
             ll = quantile(final_plasma, prob=c(.025)),
             ul = quantile(final_plasma, prob=c(.975)))
 
 
+
 # make a table
-table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
-rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
-colnames(table) = c("Final infection size", "Final deaths from COVID")
-table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+table4 = data.frame(t(round(final_size_all_4)), t(round(final_deaths_all_4)))
+rownames(table4) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table4) = c("Final infection size", "Final deaths from COVID")
+table4 %>% kable() %>% kable_styling(c("basic", "scale_down"))
+
 ```
 
 
-Alternative scenario 3 ---- lots of plasma to susceptibles
-```{r, echo=FALSE}
-#plasma parameters --- update proportion of plasma only
+Scenario 5 - administration of plasma to susceptibles after day 40 of Phase II reopening
+
+```{r, echo=TRUE}
+
+#plasma parameters --- first, set all the treatment rates to 0
+gamma_t = rep(1 / 4, Ncomp)
+v_It = v_I / 2
+ef_est = 0.5
+prop_ef = 0.7
+prop_eti = 0.1
+waning_St = 1/160 ## assuming immunity lasts 160 days
+
+p0 = 0   # number of units of plasma available at day 1
+p_s = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated to susceptible 
+for (i in (nrow(p_s)-days_steps[6]):nrow(p_s)){
+p_s[i,] = c(0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0) 
+}
+
+p_e = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated to exposed
+
+p_ia = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
 
 
-p0 = 200000   # number of units of plasma available at day 1
-p_s = c(0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0)      # proportion of plasma used allocated to susceptible 
-p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
-p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected mild
-p_is = rep(0, Ncomp)  # proportion of plasma used allocated for treatment of infected severe
-p_use = 1   # proportion of available plasma that's used 
+p_im = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated for treatment of infected mild
+
+
+p_is = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp) # proportion of plasma used allocated for treatment of infected severe
+
+
+p_use = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0, days_steps[4]),
+           rep(0, days_steps[5]),
+          rep(1, days_steps[6]))    # proportion of available plasma that's used 
 rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
- 
+p_give = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0.1, days_steps[4]),
+           rep(0.1, days_steps[5]),
+           rep(0.1, days_steps[6]))# proportion of recovered people that donate plasma
+
 plasma_params <- list(#r_st = r_st, 
                       #ef_st = ef_st, 
                       #r_et = r_et, #ef_et = ef_et, 
@@ -1496,27 +1817,50 @@ plasma_params <- list(#r_st = r_st,
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
-
-all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+                      p_use = p_use, rate_p = rate_p, p_give = p_give,
+                      waning_St = waning_St)
 
 ```
 
+```{r, echo=TRUE, eval=chunk_ev}
+
+all_sim_run5 = suppressWarnings(multiple_runs_age_timevar(nsims = num_sims, stoch = TRUE))
+write.csv(all_sim_run5, "all_sim_run5.csv")
+```
 
 
-```{r, echo=FALSE, fig.width=9}
+```{r, echo=TRUE, fig.width=9, results="hide"}
+all_sim_run5 = read.csv("all_sim_run5.csv")
 # Plot new infections and deaths 
-summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
+summ_days_run5 = all_sim_run5 %>% drop_na() %>% group_by(time) %>%
 summarise(mean_inf = mean(incid_I, na.rm=TRUE),
-ll_inf= quantile(incid_I, prob=c(.025)),
-ul_inf = quantile(incid_I, prob=c(.975)),
+ll_inf= quantile(incid_I, prob=c(.025), na.rm=TRUE),
+ul_inf = quantile(incid_I, prob=c(.975), na.rm = TRUE),
 mean_deaths = mean(incid_deaths, na.rm=TRUE),
-ll_deaths = quantile(incid_deaths, prob = c(.025)),
-ul_deaths = quantile(incid_deaths, prob = c(.975))
+ll_deaths = quantile(incid_deaths, prob = c(.025), na.rm=TRUE),
+ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE),
+mean_cum_inf = mean(cum_inf, na.rm=TRUE),
+ll_cum_inf = quantile(cum_inf, prob=c(.025), na.rm=TRUE),
+ul_cum_inf = quantile(cum_inf, prob=c(.975), na.rm=TRUE),
+mean_cum_deaths = mean(cum_deaths, na.rm=TRUE),
+ll_cum_deaths = quantile(cum_deaths, prob=c(.025), na.rm=TRUE),
+ul_cum_deaths = quantile(cum_deaths, prob=c(.975), na.rm=TRUE),
+mean_cum_infA = mean(cum_infA, na.rm=TRUE),
+ll_cum_infA = quantile(cum_infA, prob=c(.025), na.rm=TRUE),
+ul_cum_infA = quantile(cum_infA, prob=c(.975), na.rm=TRUE),
+mean_cum_infM = mean(cum_infM, na.rm=TRUE),
+ll_cum_infM = quantile(cum_infM, prob=c(.025), na.rm=TRUE),
+ul_cum_infM = quantile(cum_infM, prob=c(.975), na.rm=TRUE),
+mean_cum_infS = mean(cum_infS, na.rm=TRUE),
+ll_cum_infS = quantile(cum_infS, prob=c(.025), na.rm=TRUE),
+ul_cum_infS = quantile(cum_infS, prob=c(.975), na.rm=TRUE)
 )
+```
+
+```{r}
 
 colors = c("New infections" = "blue")
-new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+new_inf_plot5<-ggplot(data=summ_days_run5, aes(x=time)) +
 geom_line(aes(y = mean_inf, color = "New infections")) +
 geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New infections") +   theme_classic() +
@@ -1526,7 +1870,7 @@ labs(y = "Daily cases", x = "Day", color="Legend")
 
 
 colors = c("New deaths" = "blue")
-new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+new_deaths_plot5<-ggplot(data=summ_days_run5, aes(x=time)) +
 geom_line(aes(y = mean_deaths, color = "New deaths")) +
 geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New deaths") +   theme_classic() +
@@ -1534,11 +1878,65 @@ scale_color_manual(values = colors)+
 labs(y = "Daily cases", x = "Day", color="Legend")
 #new_deaths_plot2
 
-gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+gridExtra::grid.arrange(new_inf_plot5, new_deaths_plot5, nrow = 1)
 ```
 
-```{r, echo=FALSE}
-summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+
+```{r}
+# plot cumulative infections and deaths
+
+colors = c("Cumulative infections" = "blue",
+           "Cumulative asymptomatic infections" = "green",
+           "Cumulative mild infections" = "orange",
+           "Cumulative severe infections" = "brown")
+cum_inf_plot5<-ggplot(data=summ_days_run5, aes(x=time)) +
+geom_line(aes(y = mean_cum_inf, color = "Cumulative infections")) +
+  geom_line(aes(y = mean_cum_infA, color = "Cumulative asymptomatic infections")) +
+   geom_line(aes(y = mean_cum_infM, color = "Cumulative mild infections")) +
+     geom_line(aes(y = mean_cum_infS, color = "Cumulative severe infections")) +
+geom_ribbon(aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+    geom_ribbon(aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="orange", linetype=2, alpha=0.1) +
+      geom_ribbon(aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="brown", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+
+# plot cumulative deaths
+
+colors = c("Cumulative deaths" = "blue")
+cum_deaths_plot5<-ggplot(data=summ_days_run5, aes(x=time)) +
+geom_line(aes(y = mean_cum_deaths, color = "Cumulative deaths")) +
+geom_ribbon(aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=10), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=10), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=10), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=10), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=10), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot5, cum_deaths_plot5, nrow = 2)
+
+```
+```{r, echo=TRUE, results="hide"}
+summ_5 <- all_sim_run5 %>% group_by(run_index) %>% 
   summarise(final_size = max(cum_inf, na.rm=TRUE),
             final_deaths = max(cum_deaths, na.rm=TRUE),
            final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
@@ -1546,48 +1944,81 @@ summ_3 <- all_sim_run3 %>% group_by(run_index) %>%
                                  cumsum(incid_plasma7), na.rm=TRUE))
 
 
-final_size_all_3 <- summ_3 %>%
+final_size_all_5 <- summ_5 %>%
   summarise(mean = mean(final_size, na.rm=TRUE),
             median = median(final_size, na.rm=TRUE),
             ll = quantile(final_size, prob=c(.025)),
             ul = quantile(final_size, prob=c(.975)))
 
-final_deaths_all_3 <- summ_3 %>%
+final_deaths_all_5 <- summ_5 %>%
   summarise(mean = mean(final_deaths, na.rm=TRUE),
             median = median(final_deaths, na.rm=TRUE),
             ll = quantile(final_deaths, prob=c(.025)),
             ul = quantile(final_deaths, prob=c(.975)))
 
-final_plasma_all_3 <- summ_3 %>%
+final_plasma_all_5 <- summ_5 %>%
   summarise(mean = mean(final_plasma, na.rm=TRUE),
             median = median(final_plasma, na.rm=TRUE),
             ll = quantile(final_plasma, prob=c(.025)),
             ul = quantile(final_plasma, prob=c(.975)))
 
 
+
 # make a table
-table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
-rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
-colnames(table) = c("Final infection size", "Final deaths from COVID")
-table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+table5 = data.frame(t(round(final_size_all_5)), t(round(final_deaths_all_5)))
+rownames(table5) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table5) = c("Final infection size", "Final deaths from COVID")
+table5 %>% kable() %>% kable_styling(c("basic", "scale_down"))
+
 ```
 
 
-Alternative scenario  ---- lots of plasma to infected (200,000 units available at t=0, proportion of plasma assigned to severely infected: 0.1, 0.2, 0.2, 0.2, 0.2, 0.1 to each compartment, respectively)
-```{r, echo=FALSE}
-#plasma parameters --- update proportion of plasma only
+
+Scenario 6 - administration of plasma to exposed after day 40 of Phase II reopening
+
+```{r, echo=TRUE}
+
+#plasma parameters --- first, set all the treatment rates to 0
+gamma_t = rep(1 / 4, Ncomp)
+v_It = v_I / 2
+ef_est = 0.5
+prop_ef = 0.7
+prop_eti = 0.1
+waning_St = 1/160 ## assuming immunity lasts 160 days
+
+p0 = 0   # number of units of plasma available at day 1
+p_s = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated to susceptible 
+
+p_e = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated to exposed
+for (i in (nrow(p_e)-days_steps[6]):nrow(p_e)){
+p_e[i,] = c(0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0) 
+}
+
+p_ia = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
 
 
-p0 = 200000   # number of units of plasma available at day 1
-p_s = rep(0, Ncomp)      # proportion of plasma used allocated to susceptible 
-p_e = rep(0, Ncomp)   # proportion of plasma used allocated to exposed
-p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected mild
-p_is = c(0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0) # proportion of plasma used allocated for treatment of infected severe
-p_use = 1   # proportion of available plasma that's used 
+p_im = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp)  # proportion of plasma used allocated for treatment of infected mild
+
+
+p_is = matrix(rep(0, (time_max)*Ncomp), ncol = Ncomp) # proportion of plasma used allocated for treatment of infected severe
+
+
+p_use = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0, days_steps[4]),
+           rep(0, days_steps[5]),
+          rep(1, days_steps[6]))    # proportion of available plasma that's used 
 rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
- 
+p_give = c(rep(0, days_steps[1]),
+           rep(0, days_steps[2]),
+           rep(0, days_steps[3]),
+           rep(0.1, days_steps[4]),
+           rep(0.1, days_steps[5]),
+           rep(0.1, days_steps[6]))# proportion of recovered people that donate plasma
+
+
+
 plasma_params <- list(#r_st = r_st, 
                       #ef_st = ef_st, 
                       #r_et = r_et, #ef_et = ef_et, 
@@ -1597,27 +2028,49 @@ plasma_params <- list(#r_st = r_st,
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
-
-all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+                      p_use = p_use, rate_p = rate_p, p_give = p_give,
+                      waning_St = waning_St)
 
 ```
 
+```{r, echo=TRUE, eval=chunk_ev}
+
+all_sim_run6 = suppressWarnings(multiple_runs_age_timevar(nsims = num_sims, stoch = TRUE))
+write.csv(all_sim_run6, "all_sim_run6.csv")
+```
 
 
-```{r, echo=FALSE, fig.width=9}
+```{r, echo=TRUE, fig.width=9, results="hide"}
+all_sim_run6 = read.csv("all_sim_run6.csv")
 # Plot new infections and deaths 
-summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
+summ_days_run6 = all_sim_run6 %>% drop_na() %>% group_by(time) %>%
 summarise(mean_inf = mean(incid_I, na.rm=TRUE),
-ll_inf= quantile(incid_I, prob=c(.025)),
-ul_inf = quantile(incid_I, prob=c(.975)),
+ll_inf= quantile(incid_I, prob=c(.025), na.rm=TRUE),
+ul_inf = quantile(incid_I, prob=c(.975), na.rm = TRUE),
 mean_deaths = mean(incid_deaths, na.rm=TRUE),
-ll_deaths = quantile(incid_deaths, prob = c(.025)),
-ul_deaths = quantile(incid_deaths, prob = c(.975))
+ll_deaths = quantile(incid_deaths, prob = c(.025), na.rm=TRUE),
+ul_deaths = quantile(incid_deaths, prob = c(.975), na.rm=TRUE),
+mean_cum_inf = mean(cum_inf, na.rm=TRUE),
+ll_cum_inf = quantile(cum_inf, prob=c(.025), na.rm=TRUE),
+ul_cum_inf = quantile(cum_inf, prob=c(.975), na.rm=TRUE),
+mean_cum_deaths = mean(cum_deaths, na.rm=TRUE),
+ll_cum_deaths = quantile(cum_deaths, prob=c(.025), na.rm=TRUE),
+ul_cum_deaths = quantile(cum_deaths, prob=c(.975), na.rm=TRUE),
+mean_cum_infA = mean(cum_infA, na.rm=TRUE),
+ll_cum_infA = quantile(cum_infA, prob=c(.025), na.rm=TRUE),
+ul_cum_infA = quantile(cum_infA, prob=c(.975), na.rm=TRUE),
+mean_cum_infM = mean(cum_infM, na.rm=TRUE),
+ll_cum_infM = quantile(cum_infM, prob=c(.025), na.rm=TRUE),
+ul_cum_infM = quantile(cum_infM, prob=c(.975), na.rm=TRUE),
+mean_cum_infS = mean(cum_infS, na.rm=TRUE),
+ll_cum_infS = quantile(cum_infS, prob=c(.025), na.rm=TRUE),
+ul_cum_infS = quantile(cum_infS, prob=c(.975), na.rm=TRUE)
 )
+```
 
+```{r}
 colors = c("New infections" = "blue")
-new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+new_inf_plot6<-ggplot(data=summ_days_run6, aes(x=time)) +
 geom_line(aes(y = mean_inf, color = "New infections")) +
 geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New infections") +   theme_classic() +
@@ -1627,7 +2080,7 @@ labs(y = "Daily cases", x = "Day", color="Legend")
 
 
 colors = c("New deaths" = "blue")
-new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
+new_deaths_plot6<-ggplot(data=summ_days_run6, aes(x=time)) +
 geom_line(aes(y = mean_deaths, color = "New deaths")) +
 geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
 ggtitle("New deaths") +   theme_classic() +
@@ -1635,11 +2088,67 @@ scale_color_manual(values = colors)+
 labs(y = "Daily cases", x = "Day", color="Legend")
 #new_deaths_plot2
 
-gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+gridExtra::grid.arrange(new_inf_plot6, new_deaths_plot6, nrow = 1)
 ```
 
-```{r, echo=FALSE}
-summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
+
+```{r}
+# plot cumulative infections and deaths
+
+colors = c("Cumulative infections" = "blue",
+           "Cumulative asymptomatic infections" = "green",
+           "Cumulative mild infections" = "orange",
+           "Cumulative severe infections" = "brown")
+cum_inf_plot6<-ggplot(data=summ_days_run6, aes(x=time)) +
+geom_line(aes(y = mean_cum_inf, color = "Cumulative infections")) +
+  geom_line(aes(y = mean_cum_infA, color = "Cumulative asymptomatic infections")) +
+   geom_line(aes(y = mean_cum_infM, color = "Cumulative mild infections")) +
+     geom_line(aes(y = mean_cum_infS, color = "Cumulative severe infections")) +
+geom_ribbon(aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_ribbon(aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+    geom_ribbon(aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="orange", linetype=2, alpha=0.1) +
+      geom_ribbon(aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="brown", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") +
+  geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=2000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=2000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=2000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=2000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=2000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+
+# plot cumulative deaths
+
+colors = c("Cumulative deaths" = "blue")
+cum_deaths_plot6<-ggplot(data=summ_days_run6, aes(x=time)) +
+geom_line(aes(y = mean_cum_deaths, color = "Cumulative deaths")) +
+geom_ribbon(aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + geom_vline(xintercept=0, colour="grey") +
+  geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=3), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=3), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=3), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=3), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=3), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+gridExtra::grid.arrange(cum_inf_plot6, cum_deaths_plot6, nrow = 2)
+
+```
+
+
+```{r, echo=TRUE, results="hide"}
+summ_6 <- all_sim_run6 %>% group_by(run_index) %>% 
   summarise(final_size = max(cum_inf, na.rm=TRUE),
             final_deaths = max(cum_deaths, na.rm=TRUE),
            final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
@@ -1647,135 +2156,392 @@ summ_3 <- all_sim_run3 %>% group_by(run_index) %>%
                                  cumsum(incid_plasma7), na.rm=TRUE))
 
 
-final_size_all_3 <- summ_3 %>%
+final_size_all_6 <- summ_6 %>%
   summarise(mean = mean(final_size, na.rm=TRUE),
             median = median(final_size, na.rm=TRUE),
             ll = quantile(final_size, prob=c(.025)),
             ul = quantile(final_size, prob=c(.975)))
 
-final_deaths_all_3 <- summ_3 %>%
+final_deaths_all_6 <- summ_6 %>%
   summarise(mean = mean(final_deaths, na.rm=TRUE),
             median = median(final_deaths, na.rm=TRUE),
             ll = quantile(final_deaths, prob=c(.025)),
             ul = quantile(final_deaths, prob=c(.975)))
 
-final_plasma_all_3 <- summ_3 %>%
+final_plasma_all_6 <- summ_6 %>%
   summarise(mean = mean(final_plasma, na.rm=TRUE),
             median = median(final_plasma, na.rm=TRUE),
             ll = quantile(final_plasma, prob=c(.025)),
             ul = quantile(final_plasma, prob=c(.975)))
 
 
+
 # make a table
-table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
-rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
-colnames(table) = c("Final infection size", "Final deaths from COVID")
-table %>% kable() %>% kable_styling(c("basic", "scale_down"))
-```
-
-
-
-Alternative scenario  ---- plasma to exposed only (2,000 units available at t=0, proportion of plasma assigned to exposed: 0.1, 0.1, 0.2, 0.2, 0.2, 0.2 to each compartment, respectively)
-```{r, echo=FALSE}
-#plasma parameters --- update proportion of plasma only
-
-
-p0 = 2000   # number of units of plasma available at day 1
-p_s = rep(0, Ncomp)      # proportion of plasma used allocated to susceptible 
-p_e = c(0.1, 0.1, 0.2, 0.2, 0.2, 0.2, 0)   # proportion of plasma used allocated to exposed
-p_ia = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected asymptomatic
-p_im = rep(0, Ncomp)   # proportion of plasma used allocated for treatment of infected mild
-p_is = rep(0, Ncomp) # proportion of plasma used allocated for treatment of infected severe
-p_use = 1   # proportion of available plasma that's used 
-rate_p = 3.5 / 14 # rate at which recovered give units of blood; assume each person gives 3.5 units; 14 days after recovery
-p_give = 0.1 # proportion of recovered people that donate plasma
- 
-plasma_params <- list(#r_st = r_st, 
-                      #ef_st = ef_st, 
-                      #r_et = r_et, #ef_et = ef_et, 
-                      #r_it = r_it, #ef_it = ef_it, 
-                      gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
-                      prop_eti = prop_eti,
-                      p0 = p0, p_s = p_s, p_e = p_e, 
-                      p_ia = p_ia, p_im = p_im, p_is = p_is,
-                      p_use = p_use, rate_p = rate_p, p_give = p_give)
-
-all_sim_run3 = suppressWarnings(multiple_runs_age(nsims = num_sims, plasma_p = plasma_params))
+table6 = data.frame(t(round(final_size_all_6)), t(round(final_deaths_all_6)))
+rownames(table6) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table6) = c("Final infection size", "Final deaths from COVID")
+table6 %>% kable() %>% kable_styling(c("basic", "scale_down"))
 
 ```
 
 
+```{r, echo=TRUE}
+# make a combined table for scenarios 4 - 6
+table_combo2 = data.frame(t(round(final_size_all_4)), t(round(final_deaths_all_4)), t(round(final_plasma_all_4)), 
+                   t(round(final_size_all_5)), t(round(final_deaths_all_5)), t(round(final_plasma_all_5)),
+                   t(round(final_size_all_6)), t(round(final_deaths_all_6)), t(round(final_plasma_all_6)))
+rownames(table_combo2) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
+colnames(table_combo2) = c("Final infection size", "Final deaths from COVID", "Number receiving plasma",
+                    "Final infection size", "Final deaths from COVID", "Number receiving plasma",
+                    "Final infection size", "Final deaths from COVID", "Number receiving plasma")
+table_combo2 %>% kable() %>% kable_styling(c("basic", "scale_down")) %>%
+  add_header_above(c(" " = 1, "Scenario 4" = 3, "Scenario 5" = 3, "Scenario 6" = 3)) %>%
+  footnote(general = "Scenario 4 = plasma to all types of infectious individuals; \n 
+           Scenario 5 = plasma treatment to susceptible compartment only; \n
+           Scenario 6 = plasma treatment to exposed compartment only")
 
-```{r, echo=FALSE, fig.width=9}
-# Plot new infections and deaths 
-summ_days_run3 = all_sim_run3 %>% drop_na() %>% group_by(time) %>%
-summarise(mean_inf = mean(incid_I, na.rm=TRUE),
-ll_inf= quantile(incid_I, prob=c(.025)),
-ul_inf = quantile(incid_I, prob=c(.975)),
-mean_deaths = mean(incid_deaths, na.rm=TRUE),
-ll_deaths = quantile(incid_deaths, prob = c(.025)),
-ul_deaths = quantile(incid_deaths, prob = c(.975))
-)
+```
 
-colors = c("New infections" = "blue")
-new_inf_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
-geom_line(aes(y = mean_inf, color = "New infections")) +
-geom_ribbon(aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
+
+```{r, echo=TRUE, fig.width = 9, warning=FALSE}
+# combine the scenarios on a plot
+
+colors = c("Scenario 4" = "blue",
+           "Scenario 5" = "red", 
+           "Scenario 6" = "green")
+new_inf_plot_combo2<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run4, aes(y = mean_inf, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_inf, ymax=ul_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run5, aes(y = mean_inf, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_inf, ymax=ul_inf), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run6, aes(y = mean_inf, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_inf, ymax=ul_inf), fill="green", linetype=2, alpha=0.1) +
 ggtitle("New infections") +   theme_classic() +
 scale_color_manual(values = colors)+
-labs(y = "Daily cases", x = "Day", color="Legend")
-#new_inf_plot2
+labs(y = "Daily cases", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=200), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+#new_inf_plot_combo
 
 
-colors = c("New deaths" = "blue")
-new_deaths_plot3<-ggplot(data=summ_days_run3, aes(x=time)) +
-geom_line(aes(y = mean_deaths, color = "New deaths")) +
-geom_ribbon(aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
+new_deaths_plot_combo2<-ggplot(data=NULL, aes(x=time)) +
+geom_line(data = summ_days_run4, aes(y = mean_deaths, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_deaths, ymax=ul_deaths), fill="blue", linetype=2, alpha=0.1) +
+geom_line(data = summ_days_run5, aes(y = mean_deaths, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_deaths, ymax=ul_deaths), fill="red", linetype=2, alpha=0.1) + 
+geom_line(data = summ_days_run6, aes(y = mean_deaths, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_deaths, ymax=ul_deaths), fill="green", linetype=2, alpha=0.1) +
 ggtitle("New deaths") +   theme_classic() +
 scale_color_manual(values = colors)+
-labs(y = "Daily cases", x = "Day", color="Legend")
-#new_deaths_plot2
+labs(y = "Daily cases", x = "Day", color="Legend") + 
+   geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=2), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 
-gridExtra::grid.arrange(new_inf_plot3, new_deaths_plot3, nrow = 1)
+gridExtra::grid.arrange(new_inf_plot_combo2, new_deaths_plot_combo2, nrow = 1)
+
 ```
 
-```{r, echo=FALSE}
-summ_3 <- all_sim_run3 %>% group_by(run_index) %>% 
-  summarise(final_size = max(cum_inf, na.rm=TRUE),
-            final_deaths = max(cum_deaths, na.rm=TRUE),
-           final_plasma = max(cumsum(incid_plasma1)+cumsum(incid_plasma2)+cumsum(incid_plasma3)+
-                                 cumsum(incid_plasma4)+cumsum(incid_plasma5)+cumsum(incid_plasma6)+
-                                 cumsum(incid_plasma7), na.rm=TRUE))
+```{r}
+# Plot cumulative infections and deaths
+cum_inf_plot_combo2<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run4, aes(y = mean_cum_inf, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run5, aes(y = mean_cum_inf, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run6, aes(y = mean_cum_inf, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_cum_inf, ymax=ul_cum_inf), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+# cumulative asymptomatic infections
+cum_infA_plot_combo2<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run4, aes(y = mean_cum_infA, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run5, aes(y = mean_cum_infA, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run6, aes(y = mean_cum_infA, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_cum_infA, ymax=ul_cum_infA), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative asymptomatic infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=50000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+cum_infM_plot_combo2<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run4, aes(y = mean_cum_infM, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run5, aes(y = mean_cum_infM, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run6, aes(y = mean_cum_infM, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_cum_infM, ymax=ul_cum_infM), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative mild infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=25000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
+
+cum_infS_plot_combo2<-ggplot(data = NULL, aes(x=time)) + 
+geom_line(data = summ_days_run4, aes(y = mean_cum_infS, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="blue", linetype=2, alpha=0.1) +
+  geom_line(data = summ_days_run5, aes(y = mean_cum_infS, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="red", linetype=2, alpha=0.1) +
+    geom_line(data = summ_days_run6, aes(y = mean_cum_infS, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_cum_infS, ymax=ul_cum_infS), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative severe infections") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Infections", x = "Day", color="Legend") + 
+     geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=5000), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 
 
-final_size_all_3 <- summ_3 %>%
-  summarise(mean = mean(final_size, na.rm=TRUE),
-            median = median(final_size, na.rm=TRUE),
-            ll = quantile(final_size, prob=c(.025)),
-            ul = quantile(final_size, prob=c(.975)))
 
-final_deaths_all_3 <- summ_3 %>%
-  summarise(mean = mean(final_deaths, na.rm=TRUE),
-            median = median(final_deaths, na.rm=TRUE),
-            ll = quantile(final_deaths, prob=c(.025)),
-            ul = quantile(final_deaths, prob=c(.975)))
+cum_deaths_plot_combo2<-ggplot(data=NULL, aes(x=time)) +
+geom_line(data = summ_days_run4, aes(y = mean_cum_deaths, color = "Scenario 4")) +
+geom_ribbon(data = summ_days_run4, aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="blue", linetype=2, alpha=0.1) +
+geom_line(data = summ_days_run5, aes(y = mean_cum_deaths, color = "Scenario 5")) +
+geom_ribbon(data = summ_days_run5, aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="red", linetype=2, alpha=0.1) + 
+geom_line(data = summ_days_run6, aes(y = mean_cum_deaths, color = "Scenario 6")) +
+geom_ribbon(data = summ_days_run6, aes(ymin=ll_cum_deaths, ymax=ul_cum_deaths), fill="green", linetype=2, alpha=0.1) +
+ggtitle("Cumulative deaths") +   theme_classic() +
+scale_color_manual(values = colors)+
+labs(y = "Deaths", x = "Day", color="Legend") + 
+   geom_vline(xintercept=days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_vline(xintercept=days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+   geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey") + 
+  geom_text(aes(x=0, label="No intervention", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1], label="Moderate social distancing", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2], label="Stay-at-home", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3], label="Phase I reopening", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))+
+    geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4], label="Phase II reopening", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8)) + 
+   geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=100), colour="blue", angle=90, vjust = 1, text=element_text(size=8))
 
-final_plasma_all_3 <- summ_3 %>%
-  summarise(mean = mean(final_plasma, na.rm=TRUE),
-            median = median(final_plasma, na.rm=TRUE),
-            ll = quantile(final_plasma, prob=c(.025)),
-            ul = quantile(final_plasma, prob=c(.975)))
+gridExtra::grid.arrange(cum_inf_plot_combo2, cum_infA_plot_combo2, cum_infM_plot_combo2, cum_infS_plot_combo2, cum_deaths_plot_combo2, nrow = 3)
+```
+
+Let's look at change in $R_e$ over time for the different scenarios.  
+Assume serial interval follows a log normal distribution with mean = 4.9 days and sd = 4.4 days.
+```{r, eval=FALSE}
+# generate distribution of serial interval
+si_distrib = dgamma(seq(0, 100), shape=2.39, rate = 0.48, log = FALSE)
+#plot(si_dist)
+
+t_start = seq(6, max(A1$time - 2))
+t_end = seq(8, max(A1$time))
+
+# write the function
+
+## sim_doc = data frame storing results from simulation (eg all_sim_run1)
+## si_dist = distribution of serial interval
+## t_st = t_start
+## t_fin = t_end
+Re_est = function(sim_doc, si_dist = si_distrib, desired_length=num_sims,
+                  t_st = t_start, 
+                  t_fin = t_end){
+  A1 = sim_doc %>% dplyr::filter(run_index ==1)
+  Re = matrix(NA, nrow = length(A1$time), ncol = desired_length)
+  for (i in 1:desired_length){
+    A1 = sim_doc %>% dplyr::filter(run_index == i)
+    res_sim = estimate_R(A1$incid_I,
+                         method="non_parametric_si",
+                         config = list(t_start = t_st, t_end = t_fin, si_distr = si_dist))
+    for (j in 1:length(res_sim$R$t_start)){
+      Re[res_sim$R$t_start[j],i] = res_sim$R$`Mean(R)`[j]}
+  }
+  return(Re)
+}
+
+Re1 = Re_est(sim_doc = all_sim_run1, t_st = t_start, t_fin = t_end)
 
 
-# make a table
-table = data.frame(t(round(final_size_all_3)), t(round(final_deaths_all_3)))
-rownames(table) = c("Mean", "Median", "lower 95% CI limit", "upper 95% CI limit")
-colnames(table) = c("Final infection size", "Final deaths from COVID")
-table %>% kable() %>% kable_styling(c("basic", "scale_down"))
+mean_Re1 = rowMeans(Re1)
+ll_Re1= rowQuantiles(Re1, prob=c(.025), na.rm=TRUE)
+ul_Re1 = rowQuantiles(Re1, prob=c(.975), na.rm=TRUE)
+time_vec = A1$time[1:(length(A1$time))]
+Re1_df = data.frame(mean_Re1, ll_Re1, ul_Re1, time_vec)
+
+
+
+colors = c("Scenario 1" = "red")
+Re1_plot<-ggplot2::ggplot(data=Re1_df, aes(x=time_vec)) +
+geom_line(data = Re1_df, aes(y = mean_Re1, color = "Scenario 1")) +
+geom_ribbon(data = Re1_df, aes(ymin=ll_Re1, ymax=ul_Re1), fill="red", linetype=2, alpha=0.1) +
+  labs(y = "Re", x = "Day") + ggtitle("Re, Scenario 1")
+
 ```
 
 
+```{r, echo=FALSE, eval=FALSE}
+# second simulation
+
+Re2 = Re_est(sim_doc = all_sim_run2, t_st = t_start, t_fin = t_end)
 
 
+write.csv(Re2, "Re2.csv")
+mean_Re2 = rowMeans(Re2, na.rm=TRUE)
+ll_Re2= rowQuantiles(Re2, prob=c(.025), na.rm=TRUE)
+ul_Re2 = rowQuantiles(Re2, prob=c(.975), na.rm=TRUE)
+time_vec = A1$time[1:(length(A1$time))]
+Re2_df = data.frame(mean_Re2, ll_Re2, ul_Re2, time_vec)
 
+colors = c("Scenario 2" = "blue")
+Re2_plot<-ggplot2::ggplot(data=Re2_df, aes(x=time_vec)) +
+geom_line(data = Re2_df, aes(y = mean_Re2, color = "Scenario 2")) +
+geom_ribbon(data = Re2_df, aes(ymin=ll_Re2, ymax=ul_Re2), fill="blue", linetype=2, alpha=0.1) +
+  labs(y = "Re", x = "Day") + ggtitle("Re, Scenario 2")
+```
+
+```{r, echo=TRUE, eval=FALSE}
+Re3 = Re_est(sim_doc = all_sim_run3, t_st = t_start, t_fin = t_end)
+
+
+write.csv(Re3, "Re3.csv")
+mean_Re3 = rowMeans(Re3, na.rm=TRUE)
+ll_Re3= rowQuantiles(Re3, prob=c(.025), na.rm=TRUE)
+ul_Re3 = rowQuantiles(Re3, prob=c(.975), na.rm=TRUE)
+time_vec = A1$time[1:(length(A1$time))]
+Re3_df = data.frame(mean_Re3, ll_Re3, ul_Re3, time_vec)
+
+colors = c("Scenario 3" = "brown")
+Re3_plot<-ggplot2::ggplot(data=Re3_df, aes(x=time_vec)) +
+geom_line(data = Re3_df, aes(y = mean_Re3, color = "Scenario 3")) +
+geom_ribbon(data = Re3_df, aes(ymin=ll_Re3, ymax=ul_Re3), fill="brown", linetype=2, alpha=0.1) +
+  labs(y = "Re", x = "Day") + ggtitle("Re, Scenario 3")
+```
+
+```{r, eval=FALSE}
+# plot scenarios 1 - 3
+
+colors = c("Scenario 1" = "red",
+"Scenario 2" = "blue",
+"Scenario 3" = "green")
+Re1_3_plot<-ggplot2::ggplot(data=NULL, aes(x=time_vec)) +
+  geom_line(data = Re1_df, aes(y = mean_Re1, color = "Scenario 1")) +
+geom_ribbon(data = Re1_df, aes(ymin=ll_Re1, ymax=ul_Re1), fill="red", linetype=2, alpha=0.1) +
+  geom_line(data = Re2_df, aes(y = mean_Re2, color = "Scenario 2")) +
+geom_ribbon(data = Re2_df, aes(ymin=ll_Re2, ymax=ul_Re2), fill="blue", linetype=2, alpha=0.1) +
+geom_line(data = Re3_df, aes(y = mean_Re3, color = "Scenario 3")) +
+geom_ribbon(data = Re3_df, aes(ymin=ll_Re3, ymax=ul_Re3), fill="green", linetype=2, alpha=0.1) +
+  labs(y = "Re", x = "Day", color="Legend") + ggtitle("Re, Scenarios 1-3")+
+     geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=4), colour="blue", angle=90, vjust = 1, text=element_text(size=6)) +
+     geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey")
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+# set up for scenarios 4- 6
+                
+Re4 = suppressWarnings(Re_est(sim_doc = all_sim_run4))
+
+
+write.csv(Re4, "Re4.csv")
+mean_Re4 = rowMeans(Re4, na.rm=TRUE)
+ll_Re4= rowQuantiles(Re4, prob=c(.025), na.rm=TRUE)
+ul_Re4 = rowQuantiles(Re4, prob=c(.975), na.rm=TRUE)
+time_vec = A1$time[1:(length(A1$time))]
+Re4_df = data.frame(mean_Re4, ll_Re4, ul_Re4, time_vec)
+
+Re5 = suppressWarnings(Re_est(sim_doc = all_sim_run5))
+
+
+write.csv(Re5, "Re5.csv")
+mean_Re5 = rowMeans(Re5, na.rm=TRUE)
+ll_Re5= rowQuantiles(Re5, prob=c(.025), na.rm=TRUE)
+ul_Re5 = rowQuantiles(Re5, prob=c(.975), na.rm=TRUE)
+time_vec = A1$time[1:(length(A1$time))]
+Re5_df = data.frame(mean_Re5, ll_Re5, ul_Re5, time_vec)
+
+
+Re6 = (Re_est(sim_doc = all_sim_run6))
+
+write.csv(Re6, "Re6.csv")
+mean_Re6 = rowMeans(Re6, na.rm=TRUE)
+ll_Re6= rowQuantiles(Re6, prob=c(.025), na.rm=TRUE)
+ul_Re6 = rowQuantiles(Re6, prob=c(.975), na.rm=TRUE)
+time_vec = A1$time[1:(length(A1$time))]
+Re6_df = data.frame(mean_Re6, ll_Re6, ul_Re6, time_vec)
+
+colors = c("Scenario 1" = "black",
+"Scenario 4" = "blue",
+"Scenario 5" = "red",
+"Scenario 6" = "green")
+Re4_6_plot<-ggplot2::ggplot(data=NULL, aes(x=time_vec)) +
+  geom_line(data = Re1_df, aes(y = mean_Re1, color = "Scenario 1")) +
+geom_ribbon(data = Re1_df, aes(ymin=ll_Re1, ymax=ul_Re1), fill="black", linetype=2, alpha=0.1) +
+  geom_line(data = Re4_df, aes(y = mean_Re4, color = "Scenario 4")) +
+geom_ribbon(data = Re4_df, aes(ymin=ll_Re4, ymax=ul_Re4), fill="blue", linetype=2, alpha=0.1) +
+geom_line(data = Re5_df, aes(y = mean_Re5, color = "Scenario 5")) +
+geom_ribbon(data = Re5_df, aes(ymin=ll_Re5, ymax=ul_Re5), fill="red", linetype=2, alpha=0.1) +
+  geom_line(data = Re6_df, aes(y = mean_Re6, color = "Scenario 6")) +
+geom_ribbon(data = Re6_df, aes(ymin=ll_Re6, ymax=ul_Re6), fill="green", linetype=2, alpha=0.1) +
+  labs(y = "Re", x = "Day", color="Legend") + ggtitle("Re, Scenarios 4-6")+
+     geom_text(aes(x=days_steps[1]+days_steps[2]+days_steps[3]+days_steps[4] + days_steps[5], label="Plasma administration", y=4), colour="blue", angle=90, vjust = 1, text=element_text(size=6)) +
+     geom_vline(xintercept=days_steps[5]+days_steps[4]+days_steps[3]+days_steps[2]+days_steps[1], colour="grey")
+
+
+```
+
+```{r, eval=FALSE}
+# compare infection and R plots
+gridExtra::grid.arrange(new_inf_plot_combo, Re1_3_plot, nrow = 1)
+
+gridExtra::grid.arrange(new_inf_plot_combo2, Re4_6_plot, nrow = 1)
+```
