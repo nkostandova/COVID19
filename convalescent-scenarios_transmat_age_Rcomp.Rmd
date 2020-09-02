@@ -250,7 +250,9 @@ seir_step_age_timevar = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp
   p_mild = params$p_mild
   
   gamma_t = plasma$gamma_t
-  prop_ef = plasma$prop_ef
+  prop_ef_a = plasma$prop_ef_a
+  prop_ef_m = plasma$prop_ef_m
+  prop_ef_s = plasma$prop_ef_s
   ef_est = plasma$ef_est
   prop_eti = plasma$prop_eti
   SIA_s = SIA_r$SIA_s
@@ -329,7 +331,7 @@ seir_step_age_timevar = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp
   
 
   P = matrix(NA, nrow = length(time), ncol = 1)
-  P[1, ] = sum(Pa[1,]+Pm[1,]+Ps[1,])
+  P[1, ] = sum(round(Pa[1,] * prop_ef_a) +round(Pm[1,] * prop_ef_m) + round(Ps[1,] * prop_ef_s))
   
   
   sd.dw = sd.dw
@@ -390,31 +392,31 @@ seir_step_age_timevar = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp
     ## previous version of plasma allocation-- need to check this
     new_St = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_St[i] = ifelse(P[it] * p_use[it] * p_s[it, i] + SIA_s[it, i]>S[it,i],  S[it, i] * prop_ef, P[it] * p_use[it] * p_s[it, i] * prop_ef + SIA_s[it, i] * prop_ef)
+      new_St[i] = ifelse(P[it] * p_use[it] * p_s[it, i] + SIA_s[it, i]>S[it,i],  S[it, i], P[it] * p_use[it] * p_s[it, i] + SIA_s[it, i])
     }
     p_St = ifelse((new_St < 0 | S[it,]==0), 0, new_St / S[it, ])
     
     new_Et = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Et[i] = ifelse(P[it] * p_use[it] * p_e[it,i] + SIA_e[it, i]>E[it,i],  E[it, i] * prop_ef, P[it] * p_use[it] * p_e[it,i] * prop_ef + SIA_e[it, i] * prop_ef)
+      new_Et[i] = ifelse(P[it] * p_use[it] * p_e[it,i] + SIA_e[it, i]>E[it,i],  E[it, i], P[it] * p_use[it] * p_e[it,i] + SIA_e[it, i])
     }      
     p_Et = ifelse((new_Et <0 | E[it,]==0), 0, new_Et / E[it, ])
     
     new_Iat = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Iat[i] = ifelse(P[it] * p_use[it] * p_ia[it,i] + SIA_ia[it, i]>A[it,i],  A[it, i] * prop_ef, P[it] * p_use[it] * p_ia[it,i] * prop_ef + SIA_ia[it, i] * prop_ef)
+      new_Iat[i] = ifelse(P[it] * p_use[it] * p_ia[it,i] + SIA_ia[it, i]>A[it,i],  A[it, i], P[it] * p_use[it] * p_ia[it,i]  + SIA_ia[it, i])
     } 
     p_Iat = ifelse((new_Iat <0 | A[it,]==0), 0, new_Iat / A[it, ])
     
     new_Imt = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Imt[i] = ifelse(P[it] * p_use[it] * p_im[it,i] + SIA_im[it, i]>Im[it,i],  Im[it, i] * prop_ef, P[it] * p_use[it] * p_im[it,i] * prop_ef + SIA_im[it, i] * prop_ef)
+      new_Imt[i] = ifelse(P[it] * p_use[it] * p_im[it,i] + SIA_im[it, i]>Im[it,i],  Im[it, i] , P[it] * p_use[it] * p_im[it,i] + SIA_im[it, i])
     }  
     p_Imt = ifelse((new_Imt <0 | Im[it,]==0), 0, new_Imt / Im[it, ])
     
     new_Ist = rep(NA, Ncomp)
     for(i in (1:Ncomp)){
-      new_Ist[i] = ifelse(P[it] * p_use[it] * p_is[it,i] + SIA_is[it, i]>Is[it,i],  Is[it, i] * prop_ef, P[it] * p_use[it] * p_is[it,i] * prop_ef + SIA_is[it, i] * prop_ef)
+      new_Ist[i] = ifelse(P[it] * p_use[it] * p_is[it,i] + SIA_is[it, i]>Is[it,i],  Is[it, i] , P[it] * p_use[it] * p_is[it,i]  + SIA_is[it, i] )
     }  
     p_Ist = ifelse((new_Ist <0 | Is[it,]==0), 0, new_Ist / Is[it, ])
     
@@ -551,7 +553,7 @@ seir_step_age_timevar = function(stoch.init = FALSE, stoch = TRUE, Ncomp = Ncomp
     }
     
     # update the plasma compartment
-    P[it+1,] = P[it,] - sum(I_plasma) + sum(I_pa + I_pm + I_ps)
+    P[it+1,] = P[it,] - sum(I_plasma) + (sum(round(I_pa * prop_ef_a) + round(I_pm * prop_ef_m) + round(I_ps * prop_ef_s)))
     
     # update the plasma compartment -- old version (no difference in proportion donating based on which compartment they were in before)
     # number of recovered individuals
@@ -733,7 +735,9 @@ for (i in 1:time_max){
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
-prop_ef = 0.7
+prop_ef_a = 0.5
+prop_ef_m = 0.6
+prop_ef_s = 0.8
 prop_eti = 0.1
 waning_St = 1/160 ## assuming immunity lasts 160 days
 
@@ -778,7 +782,8 @@ plasma_params <- list(#r_st = r_st,
                       #r_et = r_et, #ef_et = ef_et, 
                       #r_it = r_it, #ef_it = ef_it, 
                       gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
+                      ef_est = ef_est, 
+                      prop_ef_a = prop_ef_a, prop_ef_m = prop_ef_m, prop_ef_s = prop_ef_s, 
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
@@ -1038,7 +1043,9 @@ Scenario 2 - give 100% plasma to severe infectious people at day 40 of phase II 
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
-prop_ef = 0.7
+prop_ef_a = 0.5
+prop_ef_m = 0.6
+prop_ef_s = 0.8
 prop_eti = 0.1
 waning_St = 1/160 ## assuming immunity lasts 160 days
 
@@ -1086,7 +1093,8 @@ plasma_params <- list(#r_st = r_st,
                       #r_et = r_et, #ef_et = ef_et, 
                       #r_it = r_it, #ef_it = ef_it, 
                       gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
+                      ef_est = ef_est, 
+                      prop_ef_a = prop_ef_a, prop_ef_m = prop_ef_m, prop_ef_s = prop_ef_s, 
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
@@ -1256,7 +1264,9 @@ Scenario 3 - give 100% plasma to susceptible health workers at day 40 of phase I
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
-prop_ef = 0.7
+prop_ef_a = 0.5
+prop_ef_m = 0.6
+prop_ef_s = 0.8
 prop_eti = 0.1
 waning_St = 1/160 ## assuming immunity lasts 160 days
 
@@ -1305,7 +1315,8 @@ plasma_params <- list(#r_st = r_st,
                       #r_et = r_et, #ef_et = ef_et, 
                       #r_it = r_it, #ef_it = ef_it, 
                       gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
+                      ef_est = ef_est, 
+                      prop_ef_a = prop_ef_a, prop_ef_m = prop_ef_m, prop_ef_s = prop_ef_s, 
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
@@ -1663,7 +1674,9 @@ Scenario 4 - give 100% plasma to infectious individuals at day 40 of phase II re
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
-prop_ef = 0.7
+prop_ef_a = 0.5
+prop_ef_m = 0.6
+prop_ef_s = 0.8
 prop_eti = 0.1
 waning_St = 1/160 ## assuming immunity lasts 160 days
 
@@ -1701,7 +1714,8 @@ plasma_params <- list(#r_st = r_st,
                       #r_et = r_et, #ef_et = ef_et, 
                       #r_it = r_it, #ef_it = ef_it, 
                       gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
+                      ef_est = ef_est, 
+                      prop_ef_a = prop_ef_a, prop_ef_m = prop_ef_m, prop_ef_s = prop_ef_s, 
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
@@ -1869,7 +1883,9 @@ Scenario 5 - administration of plasma to susceptibles after day 40 of Phase II r
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
-prop_ef = 0.7
+prop_ef_a = 0.5
+prop_ef_m = 0.6
+prop_ef_s = 0.8
 prop_eti = 0.1
 waning_St = 1/160 ## assuming immunity lasts 160 days
 
@@ -1903,7 +1919,8 @@ plasma_params <- list(#r_st = r_st,
                       #r_et = r_et, #ef_et = ef_et, 
                       #r_it = r_it, #ef_it = ef_it, 
                       gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
+                      ef_est = ef_est, 
+                      prop_ef_a = prop_ef_a, prop_ef_m = prop_ef_m, prop_ef_s = prop_ef_s, 
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
@@ -2073,7 +2090,9 @@ Scenario 6 - administration of plasma to exposed after day 40 of Phase II reopen
 gamma_t = rep(1 / 4, Ncomp)
 v_It = v_I / 2
 ef_est = 0.5
-prop_ef = 0.7
+prop_ef_a = 0.5
+prop_ef_m = 0.6
+prop_ef_s = 0.8
 prop_eti = 0.1
 waning_St = 1/160 ## assuming immunity lasts 160 days
 
@@ -2109,7 +2128,8 @@ plasma_params <- list(#r_st = r_st,
                       #r_et = r_et, #ef_et = ef_et, 
                       #r_it = r_it, #ef_it = ef_it, 
                       gamma_t = gamma_t, v_It = v_It,
-                      ef_est = ef_est, prop_ef = prop_ef, 
+                      ef_est = ef_est, 
+                      prop_ef_a = prop_ef_a, prop_ef_m = prop_ef_m, prop_ef_s = prop_ef_s, 
                       prop_eti = prop_eti,
                       p0 = p0, p_s = p_s, p_e = p_e, 
                       p_ia = p_ia, p_im = p_im, p_is = p_is,
